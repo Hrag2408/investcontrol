@@ -138,6 +138,8 @@ def init_db() -> None:
             """
         )
         earning_columns = {row["name"] for row in conn.execute("PRAGMA table_info(earnings)").fetchall()}
+        if "previous_balance" not in earning_columns:
+            conn.execute("ALTER TABLE earnings ADD COLUMN previous_balance REAL DEFAULT 0")
         if "current_balance" not in earning_columns:
             conn.execute("ALTER TABLE earnings ADD COLUMN current_balance REAL DEFAULT 0")
         if "percent" not in earning_columns:
@@ -346,6 +348,137 @@ def month_label(month: str) -> str:
     return f"{nomes[int(m)-1]}/{y}"
 
 
+def format_date_br(value: Any) -> str:
+    text = clean_text(value)
+    if not text:
+        return ""
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+    except ValueError:
+        return text
+
+
+def parse_int_arg(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+    except Exception:
+        return None
+
+
+def normalize_report_filters(filters: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = filters or {}
+    account_id = parse_int_arg(data.get("account_id"))
+    application_id = parse_int_arg(data.get("application_id"))
+    app_type = clean_text(data.get("app_type"))
+    if app_type not in ALLOWED_TYPES:
+        app_type = ""
+    return {
+        "account_id": account_id,
+        "application_id": application_id,
+        "app_type": app_type,
+    }
+
+
+def earning_values_from_inputs(previous_balance_raw: Any, current_balance_raw: Any, amount_raw: Any, percent_raw: Any) -> tuple[float, float, float, float]:
+    previous_balance = round(float(to_float(previous_balance_raw, 0) or 0), 2)
+    current_balance = round(float(to_float(current_balance_raw, 0) or 0), 2)
+    amount = round(float(to_float(amount_raw, 0) or 0), 2)
+    percent = round(float(to_float(percent_raw, 0) or 0), 4)
+
+    if previous_balance > 0 and current_balance > 0:
+        amount = round(current_balance - previous_balance, 2)
+        percent = round((amount / previous_balance * 100), 4) if previous_balance > 0 else 0.0
+    elif previous_balance > 0 and amount > 0:
+        current_balance = round(previous_balance + amount, 2)
+        percent = round((amount / previous_balance * 100), 4) if previous_balance > 0 else 0.0
+    elif previous_balance > 0 and percent > 0:
+        amount = round(previous_balance * percent / 100, 2)
+        current_balance = round(previous_balance + amount, 2)
+    elif current_balance > 0 and amount > 0:
+        previous_balance = round(current_balance - amount, 2)
+        percent = round((amount / previous_balance * 100), 4) if previous_balance > 0 else 0.0
+    elif current_balance > 0 and percent > 0:
+        previous_balance = round(current_balance / (1 + percent / 100), 2)
+        amount = round(current_balance - previous_balance, 2)
+
+    return max(previous_balance, 0.0), max(current_balance, 0.0), round(amount, 2), round(percent, 4)
+
+
+def filtered_applications(conn: sqlite3.Connection, filters: dict[str, Any] | None = None) -> list[sqlite3.Row]:
+    parsed = normalize_report_filters(filters)
+    rows = conn.execute(
+        """
+        SELECT ap.*, a.name AS account_name, a.institution AS account_institution
+        FROM applications ap
+        JOIN accounts a ON a.id = ap.account_id
+        WHERE (? IS NULL OR ap.account_id = ?)
+          AND (? IS NULL OR ap.id = ?)
+          AND (? = '' OR ap.type = ?)
+        ORDER BY a.name, ap.name
+        """,
+        (
+            parsed["account_id"], parsed["account_id"],
+            parsed["application_id"], parsed["application_id"],
+            parsed["app_type"], parsed["app_type"],
+        ),
+    ).fetchall()
+    return rows
+
+
+def build_monthly_report_rows(conn: sqlite3.Connection, month: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for app in filtered_applications(conn, filters):
+        app_id = int(app["id"])
+        all_movements = conn.execute(
+            "SELECT kind, amount, competence, date FROM movements WHERE application_id = ?",
+            (app_id,),
+        ).fetchall()
+        all_dividends = conn.execute(
+            "SELECT net_amount, competence, payment_date FROM dividends WHERE application_id = ?",
+            (app_id,),
+        ).fetchall()
+        all_earnings = conn.execute(
+            "SELECT amount, competence, payment_date FROM earnings WHERE application_id = ?",
+            (app_id,),
+        ).fetchall()
+
+        aportes = sum(float(item["amount"] or 0) for item in all_movements if clean_text(item["kind"]) == "aporte" and clean_text(item["competence"] or item["date"])[:7] == month)
+        resgates = sum(float(item["amount"] or 0) for item in all_movements if clean_text(item["kind"]) == "resgate" and clean_text(item["competence"] or item["date"])[:7] == month)
+        aporte = round(aportes - resgates, 2)
+        dividendos = sum(float(item["net_amount"] or 0) for item in all_dividends if clean_text(item["competence"] or item["payment_date"])[:7] == month)
+        rendimentos = sum(float(item["amount"] or 0) for item in all_earnings if clean_text(item["competence"] or item["payment_date"])[:7] == month)
+        rendimento_reais = round(dividendos + rendimentos, 2)
+
+        prev_aportes = sum(float(item["amount"] or 0) for item in all_movements if clean_text(item["kind"]) == "aporte" and clean_text(item["competence"] or item["date"])[:7] < month)
+        prev_resgates = sum(float(item["amount"] or 0) for item in all_movements if clean_text(item["kind"]) == "resgate" and clean_text(item["competence"] or item["date"])[:7] < month)
+        prev_dividendos = sum(float(item["net_amount"] or 0) for item in all_dividends if clean_text(item["competence"] or item["payment_date"])[:7] < month)
+        prev_rendimentos = sum(float(item["amount"] or 0) for item in all_earnings if clean_text(item["competence"] or item["payment_date"])[:7] < month)
+
+        saldo_inicial = round(float(app["initial_value"] or 0) + prev_aportes - prev_resgates + prev_dividendos + prev_rendimentos, 2)
+        saldo_final = round(saldo_inicial + aporte + rendimento_reais, 2)
+        rendimento_percentual = round((rendimento_reais / saldo_inicial * 100), 4) if saldo_inicial > 0 else 0.0
+        total_acumulado = round(prev_dividendos + prev_rendimentos + rendimento_reais, 2)
+
+        rows.append(
+            {
+                "account_id": int(app["account_id"] or 0),
+                "account_name": clean_text(app["account_name"]),
+                "institution": clean_text(app["account_name"]),
+                "application_id": app_id,
+                "application_name": clean_text(app["name"]),
+                "application_type": clean_text(app["type"]),
+                "saldoInicial": saldo_inicial,
+                "aporte": aporte,
+                "rendimentoReais": rendimento_reais,
+                "rendimentoPercentual": rendimento_percentual,
+                "saldoFinal": saldo_final,
+                "totalAcumulado": total_acumulado,
+            }
+        )
+    return rows
+
+
 def base_value_for_application(conn: sqlite3.Connection, app_id: int, until_month: str | None = None) -> float:
     app_row = conn.execute("SELECT initial_value FROM applications WHERE id = ?", (app_id,)).fetchone()
     if not app_row:
@@ -501,47 +634,58 @@ def dashboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
-def monthly_report(conn: sqlite3.Connection, month: str) -> dict[str, Any]:
-    total_aportes = conn.execute(
-        "SELECT COALESCE(SUM(amount), 0) AS total FROM movements WHERE kind = 'aporte' AND substr(COALESCE(competence, date), 1, 7) = ?",
-        (month,),
-    ).fetchone()["total"]
-    total_resgates = conn.execute(
-        "SELECT COALESCE(SUM(amount), 0) AS total FROM movements WHERE kind = 'resgate' AND substr(COALESCE(competence, date), 1, 7) = ?",
-        (month,),
-    ).fetchone()["total"]
-    total_dividendos = conn.execute(
-        "SELECT COALESCE(SUM(net_amount), 0) AS total FROM dividends WHERE substr(competence, 1, 7) = ?",
-        (month,),
-    ).fetchone()["total"]
-    total_rendimentos = conn.execute(
-        "SELECT COALESCE(SUM(amount), 0) AS total FROM earnings WHERE substr(competence, 1, 7) = ?",
-        (month,),
-    ).fetchone()["total"]
-    patrimonio = 0.0
-    for row in conn.execute("SELECT id FROM applications").fetchall():
-        patrimonio += application_market_value(conn, row["id"], month)
-    account_rows = conn.execute("SELECT id, name FROM accounts ORDER BY name").fetchall()
-    account_summary = []
-    for row in account_rows:
-        total = 0.0
-        app_ids = conn.execute("SELECT id FROM applications WHERE account_id = ?", (row["id"],)).fetchall()
-        for app_row in app_ids:
-            total += application_market_value(conn, app_row["id"], month)
-        account_summary.append({"account_name": row["name"], "value": round(total, 2)})
+def monthly_report(conn: sqlite3.Connection, month: str, filters: dict[str, Any] | None = None) -> dict[str, Any]:
+    parsed_filters = normalize_report_filters(filters)
+    monthly_rows = build_monthly_report_rows(conn, month, parsed_filters)
+    total_aportes = round(sum(float(item.get("aporte") or 0) for item in monthly_rows if float(item.get("aporte") or 0) > 0), 2)
+    total_resgates = round(sum(abs(float(item.get("aporte") or 0)) for item in monthly_rows if float(item.get("aporte") or 0) < 0), 2)
+    total_rendimentos = round(sum(float(item.get("rendimentoReais") or 0) for item in monthly_rows), 2)
+    total_saldo_inicial = round(sum(float(item.get("saldoInicial") or 0) for item in monthly_rows), 2)
+    total_saldo_final = round(sum(float(item.get("saldoFinal") or 0) for item in monthly_rows), 2)
+    total_acumulado = round(sum(float(item.get("totalAcumulado") or 0) for item in monthly_rows), 2)
+    total_rendimento_percentual = round((total_rendimentos / total_saldo_inicial * 100), 4) if total_saldo_inicial > 0 else 0.0
+
+    filtered_apps = filtered_applications(conn, parsed_filters)
+    type_totals: dict[str, float] = {}
+    account_totals: dict[str, float] = {}
+    for app in filtered_apps:
+        value = application_market_value(conn, int(app["id"]), month)
+        app_type = clean_text(app["type"])
+        account_name = clean_text(app["account_name"])
+        type_totals[app_type] = type_totals.get(app_type, 0.0) + value
+        account_totals[account_name] = account_totals.get(account_name, 0.0) + value
+    patrimonio = round(sum(type_totals.values()), 2)
+    grand_total = patrimonio or 1.0
+    portfolio_type = [
+        {"type": key, "value": round(value, 2), "percent": round(value / grand_total * 100, 2)}
+        for key, value in sorted(type_totals.items(), key=lambda item: item[1], reverse=True)
+        if value > 0
+    ]
+    portfolio_account = [
+        {"account_name": key, "value": round(value, 2)}
+        for key, value in sorted(account_totals.items(), key=lambda item: item[1], reverse=True)
+        if value > 0
+    ]
+
     return {
         "month": month,
         "month_label": month_label(month),
+        "filters": parsed_filters,
         "totals": {
-            "aportes": round(float(total_aportes or 0), 2),
-            "resgates": round(float(total_resgates or 0), 2),
-            "dividendos": round(float(total_dividendos or 0), 2),
-            "rendimentos": round(float(total_rendimentos or 0), 2),
-            "patrimonio": round(float(patrimonio or 0), 2),
-            "resultado_caixa": round(float(total_dividendos or 0) + float(total_rendimentos or 0) - float(total_resgates or 0), 2),
+            "aportes": total_aportes,
+            "resgates": total_resgates,
+            "dividendos": 0.0,
+            "rendimentos": total_rendimentos,
+            "patrimonio": patrimonio,
+            "resultado_caixa": round(total_rendimentos - total_resgates, 2),
+            "saldo_inicial": total_saldo_inicial,
+            "saldo_final": total_saldo_final,
+            "total_acumulado": total_acumulado,
+            "rendimento_percentual": total_rendimento_percentual,
         },
-        "portfolio_by_type": portfolio_by_type(conn, month),
-        "portfolio_by_account": account_summary,
+        "portfolio_by_type": portfolio_type,
+        "portfolio_by_account": portfolio_account,
+        "monthly_rows": monthly_rows,
     }
 
 
@@ -646,13 +790,15 @@ def import_workbook(file_path: str, filename: str) -> dict[str, Any]:
                 rendimento = to_float(row_value(row, 5), 0) or 0
                 if rendimento > 0:
                     earning_origin = f"earning|{sheet}|{month}|{app_name}"
-                    percent = round((float(rendimento) / float(final_balance) * 100), 4) if float(final_balance) > 0 else 0
+                    previous_balance = max(round(float(final_balance) - float(rendimento), 2), 0.0)
+                    percent = round((float(rendimento) / previous_balance * 100), 4) if previous_balance > 0 else 0
                     cur = conn.execute(
-                        "INSERT OR IGNORE INTO earnings (application_id, payment_date, competence, current_balance, amount, percent, notes, origin_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT OR IGNORE INTO earnings (application_id, payment_date, competence, previous_balance, current_balance, amount, percent, notes, origin_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             app_id,
                             month_last_day(current_date),
                             month,
+                            previous_balance,
                             float(final_balance),
                             float(rendimento),
                             percent,
@@ -1190,21 +1336,20 @@ def delete_dividend(item_id: int):
 def create_earning():
     data = parse_json()
     app_id = int(data.get("application_id") or 0)
-    amount = float(data.get("amount") or 0)
-    current_balance = float(data.get("current_balance") or 0)
-    percent = float(data.get("percent") or 0)
+    previous_balance, current_balance, amount, percent = earning_values_from_inputs(
+        data.get("previous_balance"),
+        data.get("current_balance"),
+        data.get("amount"),
+        data.get("percent"),
+    )
     payment_date = clean_text(data.get("payment_date")) or date.today().isoformat()
     competence = clean_text(data.get("competence")) or payment_date[:7]
-    if current_balance > 0 and percent > 0 and amount <= 0:
-        amount = round(current_balance * percent / 100, 2)
-    if current_balance > 0 and amount > 0 and percent <= 0:
-        percent = round(amount / current_balance * 100, 4)
-    if not app_id or amount <= 0:
-        return jsonify({"ok": False, "error": "Preencha aplicação e valor válido."}), 400
+    if not app_id or amount <= 0 or current_balance <= 0:
+        return jsonify({"ok": False, "error": "Informe a aplicação, o saldo anterior e o saldo atual com rendimento positivo."}), 400
     with get_db() as conn:
         cursor = conn.execute(
-            "INSERT INTO earnings (application_id, payment_date, competence, current_balance, amount, percent, notes) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (app_id, payment_date, competence, current_balance, amount, percent, clean_text(data.get("notes"))),
+            "INSERT INTO earnings (application_id, payment_date, competence, previous_balance, current_balance, amount, percent, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (app_id, payment_date, competence, previous_balance, current_balance, amount, percent, clean_text(data.get("notes"))),
         )
     return jsonify({"ok": True, "id": cursor.lastrowid, "message": "Rendimento salvo."})
 
@@ -1214,21 +1359,20 @@ def create_earning():
 def update_earning(item_id: int):
     data = parse_json()
     app_id = int(data.get("application_id") or 0)
-    amount = float(data.get("amount") or 0)
-    current_balance = float(data.get("current_balance") or 0)
-    percent = float(data.get("percent") or 0)
+    previous_balance, current_balance, amount, percent = earning_values_from_inputs(
+        data.get("previous_balance"),
+        data.get("current_balance"),
+        data.get("amount"),
+        data.get("percent"),
+    )
     payment_date = clean_text(data.get("payment_date")) or date.today().isoformat()
     competence = clean_text(data.get("competence")) or payment_date[:7]
-    if current_balance > 0 and percent > 0 and amount <= 0:
-        amount = round(current_balance * percent / 100, 2)
-    if current_balance > 0 and amount > 0 and percent <= 0:
-        percent = round(amount / current_balance * 100, 4)
-    if not app_id or amount <= 0:
-        return jsonify({"ok": False, "error": "Preencha aplicação e valor válido."}), 400
+    if not app_id or amount <= 0 or current_balance <= 0:
+        return jsonify({"ok": False, "error": "Informe a aplicação, o saldo anterior e o saldo atual com rendimento positivo."}), 400
     with get_db() as conn:
         conn.execute(
-            "UPDATE earnings SET application_id = ?, payment_date = ?, competence = ?, current_balance = ?, amount = ?, percent = ?, notes = ? WHERE id = ?",
-            (app_id, payment_date, competence, current_balance, amount, percent, clean_text(data.get("notes")), item_id),
+            "UPDATE earnings SET application_id = ?, payment_date = ?, competence = ?, previous_balance = ?, current_balance = ?, amount = ?, percent = ?, notes = ? WHERE id = ?",
+            (app_id, payment_date, competence, previous_balance, current_balance, amount, percent, clean_text(data.get("notes")), item_id),
         )
     return jsonify({"ok": True, "message": "Rendimento atualizado."})
 
@@ -1245,8 +1389,63 @@ def delete_earning(item_id: int):
 @login_required
 def api_monthly_report():
     month = parse_month(request.args.get("month"))
+    filters = {
+        "account_id": request.args.get("account_id"),
+        "application_id": request.args.get("application_id"),
+        "app_type": request.args.get("app_type"),
+    }
     with get_db() as conn:
-        return jsonify({"ok": True, "report": monthly_report(conn, month)})
+        return jsonify({"ok": True, "report": monthly_report(conn, month, filters)})
+
+
+@app.get("/api/reports/monthly/export")
+@login_required
+def api_monthly_report_export():
+    month = parse_month(request.args.get("month"))
+    filters = {
+        "account_id": request.args.get("account_id"),
+        "application_id": request.args.get("application_id"),
+        "app_type": request.args.get("app_type"),
+    }
+    with get_db() as conn:
+        report = monthly_report(conn, month, filters)
+    rows = report.get("monthly_rows") or []
+    summary_rows = [
+        {"Indicador": "Mês", "Valor": report.get("month_label")},
+        {"Indicador": "Saldo inicial", "Valor": report["totals"].get("saldo_inicial", 0)},
+        {"Indicador": "Aportes líquidos", "Valor": report["totals"].get("aportes", 0)},
+        {"Indicador": "Resgates", "Valor": report["totals"].get("resgates", 0)},
+        {"Indicador": "Rendimentos", "Valor": report["totals"].get("rendimentos", 0)},
+        {"Indicador": "Rentabilidade (%)", "Valor": report["totals"].get("rendimento_percentual", 0)},
+        {"Indicador": "Saldo final", "Valor": report["totals"].get("saldo_final", 0)},
+        {"Indicador": "Patrimônio filtrado", "Valor": report["totals"].get("patrimonio", 0)},
+    ]
+    detail_rows = [
+        {
+            "Conta": item.get("account_name"),
+            "Tipo": item.get("application_type"),
+            "Aplicação": item.get("application_name"),
+            "Saldo inicial": item.get("saldoInicial"),
+            "Aporte líquido": item.get("aporte"),
+            "Rendimento em R$": item.get("rendimentoReais"),
+            "Rendimento em %": item.get("rendimentoPercentual"),
+            "Saldo final": item.get("saldoFinal"),
+            "Total acumulado": item.get("totalAcumulado"),
+        }
+        for item in rows
+    ]
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Resumo", index=False)
+        pd.DataFrame(detail_rows).to_excel(writer, sheet_name="Detalhamento", index=False)
+    buffer.seek(0)
+    filename = f"relatorio_mensal_{month}.xlsx"
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @app.post("/api/actions/reset-launches")

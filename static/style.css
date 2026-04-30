@@ -375,3 +375,17 @@ th {
     padding: 18px;
   }
 }
+
+
+input[readonly] {
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.report-filters-card {
+  margin-bottom: 16px;
+}
+
+.report-filters-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}

@@ -9,7 +9,7 @@ const state = {
   earnings: [],
   snapshots: [],
   imports: [],
-  report: { month: '', totals: {}, portfolio_by_type: [], portfolio_by_account: [] }
+  report: { month: '', totals: {}, portfolio_by_type: [], portfolio_by_account: [], monthly_rows: [], filters: {} }
 };
 
 const typeOptions = [
@@ -34,6 +34,26 @@ function formatCurrency(value) {
 
 function formatPercent(value, min = 2, max = 4) {
   return Number(value || 0).toLocaleString('pt-BR', { minimumFractionDigits: min, maximumFractionDigits: max });
+}
+
+function formatDate(value) {
+  if (!value) return '-';
+  const text = String(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const [year, month, day] = text.split('-');
+    return `${day}/${month}/${year}`;
+  }
+  const parsed = new Date(text.replace(' ', 'T'));
+  if (Number.isNaN(parsed.getTime())) return escapeHtml(text);
+  return parsed.toLocaleDateString('pt-BR');
+}
+
+function formatMonthLabel(value) {
+  if (!value) return '-';
+  const text = String(value).slice(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(text)) return text;
+  const [year, month] = text.split('-');
+  return `${month}/${year}`;
 }
 
 function monthOf(item, dateKey = 'date', competenceKey = 'competence') {
@@ -75,41 +95,21 @@ function updateEarningHint(message, cssClass = 'summary-box muted') {
   $('earningCalcHint').innerHTML = message;
 }
 
-function recalculateEarningFields(changedField = '') {
+function recalculateEarningFields() {
+  const previousBalance = Number($('earningPreviousBalance').value || 0);
   const currentBalance = Number($('earningCurrentBalance').value || 0);
-  let amount = Number($('earningAmount').value || 0);
-  let percent = Number($('earningPercent').value || 0);
 
-  if (currentBalance > 0) {
-    if (changedField === 'percent' && percent > 0) {
-      amount = Number((currentBalance * percent / 100).toFixed(2));
-      $('earningAmount').value = amount.toFixed(2);
-    } else if (changedField === 'amount' && amount > 0) {
-      percent = Number((amount / currentBalance * 100).toFixed(4));
-      $('earningPercent').value = percent.toFixed(4);
-    } else if (changedField === 'balance') {
-      if (amount > 0) {
-        percent = Number((amount / currentBalance * 100).toFixed(4));
-        $('earningPercent').value = percent.toFixed(4);
-      } else if (percent > 0) {
-        amount = Number((currentBalance * percent / 100).toFixed(2));
-        $('earningAmount').value = amount.toFixed(2);
-      }
-    }
-  }
-
-  if (currentBalance > 0 && amount > 0) {
-    const computedPercent = Number((amount / currentBalance * 100).toFixed(4));
-    $('earningPercent').value = computedPercent.toFixed(4);
-    const mood = computedPercent >= 1 ? 'summary-box' : 'summary-box muted';
-    updateEarningHint(`Esse rendimento representa <strong>${formatPercent(computedPercent)}%</strong> sobre o saldo atual de <strong>${formatCurrency(currentBalance)}</strong>.`, mood);
-  } else if (currentBalance > 0 && percent > 0) {
-    const computedAmount = Number((currentBalance * percent / 100).toFixed(2));
-    $('earningAmount').value = computedAmount.toFixed(2);
-    const mood = percent >= 1 ? 'summary-box' : 'summary-box muted';
-    updateEarningHint(`Com saldo atual de <strong>${formatCurrency(currentBalance)}</strong> e taxa de <strong>${formatPercent(percent)}%</strong>, o rendimento calculado é <strong>${formatCurrency(computedAmount)}</strong>.`, mood);
+  if (previousBalance > 0 && currentBalance > 0) {
+    const amount = Number((currentBalance - previousBalance).toFixed(2));
+    const percent = previousBalance > 0 ? Number((amount / previousBalance * 100).toFixed(4)) : 0;
+    $('earningAmount').value = amount.toFixed(2);
+    $('earningPercent').value = percent.toFixed(4);
+    const mood = amount >= 0 ? 'summary-box' : 'summary-box muted';
+    updateEarningHint(`Saldo anterior de <strong>${formatCurrency(previousBalance)}</strong> para saldo atual de <strong>${formatCurrency(currentBalance)}</strong> gera rendimento de <strong>${formatCurrency(amount)}</strong>, equivalente a <strong>${formatPercent(percent)}%</strong>.`, mood);
   } else {
-    updateEarningHint('Informe saldo atual + valor para calcular o percentual automaticamente, ou saldo atual + percentual para calcular o valor do rendimento.', 'summary-box muted');
+    $('earningAmount').value = '';
+    $('earningPercent').value = '';
+    updateEarningHint('Informe o saldo anterior e o saldo atual. O sistema calculará automaticamente o rendimento em R$ e a rentabilidade do período.', 'summary-box muted');
   }
 }
 
@@ -124,8 +124,8 @@ function useProjectedBalanceForEarning() {
     showFlash('Não encontrei saldo projetado para essa aplicação. Informe manualmente.', 'error');
     return;
   }
-  $('earningCurrentBalance').value = Number(projected).toFixed(2);
-  recalculateEarningFields('balance');
+  $('earningPreviousBalance').value = Number(projected).toFixed(2);
+  recalculateEarningFields();
 }
 
 function escapeHtml(value) {
@@ -207,6 +207,34 @@ function updateSelects() {
   fillSelect('earningApplication', state.applications, 'id', appLabel);
 }
 
+function fillFilterSelect(selectId, items, labelFn, currentValue = '') {
+  const select = $(selectId);
+  if (!select) return;
+  const options = ['<option value="">Todos</option>'].concat(items.map((item) => `<option value="${item.value}">${escapeHtml(labelFn(item))}</option>`));
+  select.innerHTML = options.join('');
+  select.value = currentValue && options.join('').includes(`value="${currentValue}"`) ? String(currentValue) : '';
+}
+
+function updateReportFilterOptions() {
+  const filters = state.report?.filters || {};
+  const selectedAccount = String(filters.account_id || $('reportAccountFilter')?.value || '');
+  const selectedApplication = String(filters.application_id || $('reportApplicationFilter')?.value || '');
+  const selectedType = String(filters.app_type || $('reportTypeFilter')?.value || '');
+  fillFilterSelect('reportAccountFilter', state.accounts.map((item) => ({ value: item.id, label: `${item.name} · ${item.institution}` })), (item) => item.label, selectedAccount);
+  const filteredApps = selectedAccount ? state.applications.filter((item) => String(item.account_id) === selectedAccount) : state.applications;
+  fillFilterSelect('reportApplicationFilter', filteredApps.map((item) => ({ value: item.id, label: `${item.name} · ${item.account_name}` })), (item) => item.label, selectedApplication);
+  fillFilterSelect('reportTypeFilter', typeOptions.map((item) => ({ value: item, label: item })), (item) => item.label, selectedType);
+}
+
+function buildReportQueryString() {
+  const params = new URLSearchParams();
+  params.set('month', $('reportMonth').value || currentMonth);
+  if ($('reportAccountFilter')?.value) params.set('account_id', $('reportAccountFilter').value);
+  if ($('reportApplicationFilter')?.value) params.set('application_id', $('reportApplicationFilter').value);
+  if ($('reportTypeFilter')?.value) params.set('app_type', $('reportTypeFilter').value);
+  return params.toString();
+}
+
 function metricCard(label, value, foot = '') {
   return `<div class="card metric-card"><div class="metric-label">${label}</div><div class="metric-value">${value}</div><div class="metric-foot">${foot}</div></div>`;
 }
@@ -252,7 +280,7 @@ function renderDashboard() {
   $('recentMovements').innerHTML = (state.dashboard.recent_movements || []).length
     ? state.dashboard.recent_movements.map((item) => `
         <tr>
-          <td>${escapeHtml(item.date || '-')}</td>
+          <td>${formatDate(item.date || '-')}</td>
           <td>${escapeHtml(item.application_name || '-')}</td>
           <td><span class="badge ${item.kind === 'resgate' ? 'resgate' : 'aporte'}">${escapeHtml(item.kind || '-')}</span></td>
           <td>${formatCurrency(item.amount)}</td>
@@ -263,7 +291,7 @@ function renderDashboard() {
   $('recentDividends').innerHTML = (state.dashboard.recent_dividends || []).length
     ? state.dashboard.recent_dividends.map((item) => `
         <tr>
-          <td>${escapeHtml(item.payment_date || '-')}</td>
+          <td>${formatDate(item.payment_date || '-')}</td>
           <td>${escapeHtml(item.application_name || '-')}</td>
           <td>${formatCurrency(item.net_amount)}</td>
         </tr>
@@ -316,7 +344,7 @@ function renderMovements() {
   $('movementsTable').innerHTML = state.movements.length
     ? state.movements.map((item) => `
         <tr>
-          <td>${escapeHtml(item.date)}</td>
+          <td>${formatDate(item.date)}</td>
           <td><strong>${escapeHtml(item.application_name)}</strong><br><small>${escapeHtml(item.account_name)}</small></td>
           <td><span class="badge ${item.kind === 'resgate' ? 'resgate' : 'aporte'}">${escapeHtml(item.kind)}</span></td>
           <td>${formatCurrency(item.amount)}</td>
@@ -336,7 +364,7 @@ function renderDividends() {
   $('dividendsTable').innerHTML = state.dividends.length
     ? state.dividends.map((item) => `
         <tr>
-          <td>${escapeHtml(item.payment_date)}</td>
+          <td>${formatDate(item.payment_date)}</td>
           <td><strong>${escapeHtml(item.application_name)}</strong><br><small>${escapeHtml(item.account_name)}</small></td>
           <td>${formatCurrency(item.gross_amount)}</td>
           <td>${formatCurrency(item.net_amount)}</td>
@@ -359,7 +387,7 @@ function renderEarnings() {
         const percent = Number(item.percent || 0) || (currentBalance > 0 ? Number((Number(item.amount || 0) / currentBalance * 100).toFixed(4)) : 0);
         return `
         <tr>
-          <td>${escapeHtml(item.payment_date)}</td>
+          <td>${formatDate(item.payment_date)}</td>
           <td><strong>${escapeHtml(item.application_name)}</strong><br><small>${escapeHtml(item.account_name)}</small></td>
           <td>${formatCurrency(item.amount)}</td>
           <td>${percent ? `${formatPercent(percent)}%` : '-'}</td>
@@ -381,7 +409,7 @@ function renderImportSection() {
   $('snapshotsTable').innerHTML = state.snapshots.length
     ? state.snapshots.slice(0, 20).map((item) => `
         <tr>
-          <td>${escapeHtml(item.ref_month)}</td>
+          <td>${formatMonthLabel(item.ref_month)}</td>
           <td>${escapeHtml(item.account_name)}</td>
           <td>${escapeHtml(item.application_name)}</td>
           <td>${formatCurrency(item.balance)}</td>
@@ -401,7 +429,7 @@ function renderImportSection() {
         }
         return `
           <tr>
-            <td>${escapeHtml(item.imported_at)}</td>
+            <td>${formatDateTime(item.imported_at)}</td>
             <td>${escapeHtml(item.filename)}</td>
             <td>${escapeHtml(summary)}</td>
           </tr>
@@ -481,63 +509,21 @@ function renderAdministration() {
   renderUsers();
 }
 
-function buildMonthlyReportRows(month) {
-  return state.applications.map((app) => {
-    const allMovements = state.movements.filter((item) => String(item.application_id) === String(app.id));
-    const allDividends = state.dividends.filter((item) => String(item.application_id) === String(app.id));
-    const allEarnings = state.earnings.filter((item) => String(item.application_id) === String(app.id));
-
-    const movements = allMovements.filter((item) => monthOf(item) === month);
-    const dividends = allDividends.filter((item) => monthOf(item, 'payment_date') === month);
-    const earnings = allEarnings.filter((item) => monthOf(item, 'payment_date') === month);
-
-    const previousMovements = allMovements.filter((item) => monthOf(item) < month);
-    const previousDividends = allDividends.filter((item) => monthOf(item, 'payment_date') < month);
-    const previousEarnings = allEarnings.filter((item) => monthOf(item, 'payment_date') < month);
-
-    const aportes = movements
-      .filter((item) => item.kind === 'aporte')
-      .reduce((total, item) => total + Number(item.amount || 0), 0);
-    const resgates = movements
-      .filter((item) => item.kind === 'resgate')
-      .reduce((total, item) => total + Number(item.amount || 0), 0);
-    const aporte = aportes - resgates;
-    const dividendos = dividends.reduce((total, item) => total + Number(item.net_amount || 0), 0);
-    const rendimentos = earnings.reduce((total, item) => total + Number(item.amount || 0), 0);
-    const rendimentoReais = dividendos + rendimentos;
-
-    const prevAportes = previousMovements
-      .filter((item) => item.kind === 'aporte')
-      .reduce((total, item) => total + Number(item.amount || 0), 0);
-    const prevResgates = previousMovements
-      .filter((item) => item.kind === 'resgate')
-      .reduce((total, item) => total + Number(item.amount || 0), 0);
-    const prevDividendos = previousDividends.reduce((total, item) => total + Number(item.net_amount || 0), 0);
-    const prevRendimentos = previousEarnings.reduce((total, item) => total + Number(item.amount || 0), 0);
-
-    const saldoInicial = Number(app.initial_value || 0) + prevAportes - prevResgates + prevDividendos + prevRendimentos;
-    const saldoFinal = saldoInicial + aporte + rendimentoReais;
-    const rendimentoPercentual = saldoInicial > 0 ? Number((rendimentoReais / saldoInicial * 100).toFixed(4)) : 0;
-    const totalAcumulado = prevDividendos + prevRendimentos + rendimentoReais;
-
-    return {
-      institution: app.account_name || '-',
-      application_name: app.name || '-',
-      saldoInicial,
-      aporte,
-      rendimentoReais,
-      rendimentoPercentual,
-      saldoFinal,
-      totalAcumulado,
-    };
-  });
+function buildMonthlyReportRows() {
+  return Array.isArray(state.report?.monthly_rows) ? state.report.monthly_rows : [];
 }
 
 function renderReport() {
   const totals = state.report.totals || {};
   const month = state.report.month || $('reportMonth').value || currentMonth;
   const monthLabel = state.report.month_label || month || '-';
-  const monthlyRows = buildMonthlyReportRows(month);
+  const monthlyRows = buildMonthlyReportRows();
+  updateReportFilterOptions();
+  if (state.report?.filters) {
+    $('reportAccountFilter').value = state.report.filters.account_id ? String(state.report.filters.account_id) : '';
+    $('reportApplicationFilter').value = state.report.filters.application_id ? String(state.report.filters.application_id) : '';
+    $('reportTypeFilter').value = state.report.filters.app_type || '';
+  }
   const totalSaldoInicial = monthlyRows.reduce((sum, item) => sum + Number(item.saldoInicial || 0), 0);
   const totalAporte = monthlyRows.reduce((sum, item) => sum + Number(item.aporte || 0), 0);
   const totalRendimentoReais = monthlyRows.reduce((sum, item) => sum + Number(item.rendimentoReais || 0), 0);
@@ -547,12 +533,13 @@ function renderReport() {
 
   $('reportCards').innerHTML = [
     metricCard('Mês', monthLabel, 'Competência selecionada'),
-    metricCard('Patrimônio', formatCurrency(totals.patrimonio), 'No fechamento do mês'),
+    metricCard('Saldo inicial', formatCurrency(totalSaldoInicial), 'Base do cálculo da rentabilidade'),
+    metricCard('Patrimônio', formatCurrency(totals.patrimonio), 'No fechamento do mês filtrado'),
     metricCard('Aportes', formatCurrency(totals.aportes), 'Competência do mês'),
     metricCard('Resgates', formatCurrency(totals.resgates), 'Competência do mês'),
-    metricCard('Dividendos', formatCurrency(totals.dividendos), 'Competência do mês'),
     metricCard('Rendimentos', formatCurrency(totals.rendimentos), 'Competência do mês'),
-    metricCard('Resultado de caixa', formatCurrency(totals.resultado_caixa), 'Dividendos + rendimentos - resgates')
+    metricCard('Rentabilidade', `${formatPercent(totalRendimentoPercentual)}%`, 'Calculada sobre o saldo inicial filtrado'),
+    metricCard('Saldo final', formatCurrency(totalSaldoFinal), 'Fechamento projetado do período')
   ].join('');
 
   $('reportExecutiveSummary').innerHTML = `Em <strong>${escapeHtml(monthLabel)}</strong>, a carteira começou com <strong>${formatCurrency(totalSaldoInicial)}</strong>, recebeu <strong>${formatCurrency(totalAporte)}</strong> em aporte líquido e gerou <strong>${formatCurrency(totalRendimentoReais)}</strong> em rendimentos do mês, equivalente a <strong>${formatPercent(totalRendimentoPercentual)}%</strong>. O saldo final projetado ficou em <strong>${formatCurrency(totalSaldoFinal)}</strong>, com <strong>${formatCurrency(totalAcumulado)}</strong> acumulados em dividendos + rendimentos.`;
@@ -631,6 +618,7 @@ function clearEarningForm() {
   $('earningId').value = '';
   $('earningDate').value = today;
   $('earningCompetence').value = currentMonth;
+  $('earningPreviousBalance').value = '';
   $('earningCurrentBalance').value = '';
   $('earningAmount').value = '';
   $('earningPercent').value = '';
@@ -713,11 +701,13 @@ function editEarning(id) {
   $('earningApplication').value = item.application_id;
   $('earningDate').value = item.payment_date || today;
   $('earningCompetence').value = (item.competence || currentMonth).slice(0, 7);
+  const previousBalance = Number(item.previous_balance || (Number(item.current_balance || 0) - Number(item.amount || 0)) || 0);
+  $('earningPreviousBalance').value = previousBalance ? previousBalance.toFixed(2) : '';
   $('earningCurrentBalance').value = item.current_balance || '';
   $('earningAmount').value = item.amount || '';
   $('earningPercent').value = item.percent || '';
   $('earningNotes').value = item.notes || '';
-  recalculateEarningFields(item.percent ? 'percent' : 'amount');
+  recalculateEarningFields();
 }
 
 function editUser(id) {
@@ -895,21 +885,19 @@ function bindForms() {
   $('earningForm').addEventListener('submit', async (event) => {
     event.preventDefault();
     try {
-      let amount = Number($('earningAmount').value || 0);
-      let percent = Number($('earningPercent').value || 0);
+      const previousBalance = Number($('earningPreviousBalance').value || 0);
       const currentBalance = Number($('earningCurrentBalance').value || 0);
-      if (currentBalance > 0 && percent > 0 && amount <= 0) {
-        amount = Number((currentBalance * percent / 100).toFixed(2));
-        $('earningAmount').value = amount.toFixed(2);
-      }
-      if (currentBalance > 0 && amount > 0 && percent <= 0) {
-        percent = Number((amount / currentBalance * 100).toFixed(4));
-        $('earningPercent').value = percent.toFixed(4);
+      const amount = Number($('earningAmount').value || 0);
+      const percent = Number($('earningPercent').value || 0);
+      if (previousBalance <= 0 || currentBalance <= 0 || amount <= 0) {
+        showFlash('Informe saldo anterior e saldo atual para calcular um rendimento positivo.', 'error');
+        return;
       }
       await saveJsonForm('earningId', '/api/earnings', {
         application_id: $('earningApplication').value,
         payment_date: $('earningDate').value,
         competence: $('earningCompetence').value,
+        previous_balance: previousBalance,
         current_balance: currentBalance,
         amount,
         percent,
@@ -1116,13 +1104,17 @@ function bindButtons() {
   $('btnRefreshDashboard').addEventListener('click', () => loadBootstrap().catch((error) => showFlash(error.message, 'error')));
   $('btnLoadReport').addEventListener('click', async () => {
     try {
-      const data = await api(`/api/reports/monthly?month=${$('reportMonth').value || currentMonth}`);
+      const data = await api(`/api/reports/monthly?${buildReportQueryString()}`);
       state.report = data.report;
       renderReport();
       showFlash('Relatório mensal atualizado.', 'success');
     } catch (error) {
       showFlash(error.message, 'error');
     }
+  });
+
+  $('btnExportReport').addEventListener('click', () => {
+    window.location.href = `/api/reports/monthly/export?${buildReportQueryString()}`;
   });
 
   $('btnImportSample').addEventListener('click', async () => {
@@ -1206,6 +1198,7 @@ async function init() {
   bindButtons();
   $('earningApplication').addEventListener('change', () => recalculateEarningFields());
   $('earningCompetence').addEventListener('change', () => recalculateEarningFields());
+  $('reportAccountFilter').addEventListener('change', () => updateReportFilterOptions());
   try {
     await loadBootstrap();
   } catch (error) {

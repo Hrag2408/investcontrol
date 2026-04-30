@@ -206,15 +206,16 @@
               <div class="field"><label>Aplicação</label><select id="earningApplication" required></select></div>
               <div class="field"><label>Data de pagamento</label><input id="earningDate" type="date" required /></div>
               <div class="field"><label>Competência</label><input id="earningCompetence" type="month" required /></div>
-              <div class="field"><label>Saldo atual</label><input id="earningCurrentBalance" type="number" min="0" step="0.01" oninput="recalculateEarningFields('balance')" /></div>
-              <div class="field"><label>Valor</label><input id="earningAmount" type="number" min="0" step="0.01" oninput="recalculateEarningFields('amount')" /></div>
-              <div class="field"><label>Percentual (%)</label><input id="earningPercent" type="number" min="0" step="0.0001" oninput="recalculateEarningFields('percent')" /></div>
+              <div class="field"><label>Saldo anterior</label><input id="earningPreviousBalance" type="number" min="0" step="0.01" oninput="recalculateEarningFields('previous')" /></div>
+              <div class="field"><label>Saldo atual</label><input id="earningCurrentBalance" type="number" min="0" step="0.01" oninput="recalculateEarningFields('current')" /></div>
+              <div class="field"><label>Rendimento calculado</label><input id="earningAmount" type="number" min="0" step="0.01" readonly /></div>
+              <div class="field"><label>Percentual calculado (%)</label><input id="earningPercent" type="number" min="0" step="0.0001" readonly /></div>
               <div class="field full">
                 <label>Leitura do mês</label>
                 <div class="actions-inline">
-                  <button type="button" class="secondary" onclick="useProjectedBalanceForEarning()">Usar saldo projetado da aplicação</button>
+                  <button type="button" class="secondary" onclick="useProjectedBalanceForEarning()">Usar saldo projetado como saldo anterior</button>
                 </div>
-                <div id="earningCalcHint" class="summary-box muted">Informe saldo atual + valor para calcular o percentual automaticamente, ou saldo atual + percentual para calcular o valor do rendimento.</div>
+                <div id="earningCalcHint" class="summary-box muted">Informe o saldo anterior e o saldo atual. O sistema calculará automaticamente o rendimento em R$ e a rentabilidade do período.</div>
               </div>
               <div class="field full"><label>Observações</label><textarea id="earningNotes" rows="3"></textarea></div>
               <div class="actions-inline full">
@@ -225,7 +226,7 @@
           </div>
           <div class="card">
             <div class="section-head compact"><div><h3>Histórico de rendimentos</h3><small id="earningsCountLabel"></small></div></div>
-            <div class="table-wrap"><table><thead><tr><th>Pagamento</th><th>Aplicação</th><th>Valor</th><th>% do saldo</th><th>Saldo atual</th><th>Origem</th><th>Ações</th></tr></thead><tbody id="earningsTable"></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>Pagamento</th><th>Aplicação</th><th>Saldo anterior</th><th>Valor</th><th>% do saldo</th><th>Saldo atual</th><th>Origem</th><th>Ações</th></tr></thead><tbody id="earningsTable"></tbody></table></div>
           </div>
         </div>
       </section>
@@ -382,11 +383,25 @@
         <div class="section-head">
           <div>
             <h3>Relatório mensal</h3>
-            <small>Selecione o mês para consolidar patrimônio, aportes, resgates e rendimentos.</small>
+            <small>Selecione o mês, aplique filtros e exporte o resultado para Excel.</small>
           </div>
           <div class="actions-inline">
             <input id="reportMonth" type="month" />
             <button class="secondary" id="btnLoadReport">Atualizar relatório</button>
+            <button id="btnExportReport">Exportar Excel</button>
+          </div>
+        </div>
+        <div class="card report-filters-card">
+          <div class="section-head compact">
+            <div>
+              <h3>Filtros do relatório</h3>
+              <small>Refine por conta, aplicação e tipo de ativo.</small>
+            </div>
+          </div>
+          <div class="forms-grid report-filters-grid">
+            <div class="field"><label>Conta</label><select id="reportAccountFilter"></select></div>
+            <div class="field"><label>Aplicação</label><select id="reportApplicationFilter"></select></div>
+            <div class="field"><label>Tipo</label><select id="reportTypeFilter"></select></div>
           </div>
         </div>
         <div class="grid-cards" id="reportCards"></div>
