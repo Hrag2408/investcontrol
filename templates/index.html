@@ -25,19 +25,20 @@
         <button data-section="dividendos">Dividendos</button>
         <button data-section="rendimentos">Rendimentos</button>
         <button data-section="importacao">Importação</button>
+        <button data-section="administracao">Administração</button>
         <button data-section="relatorios">Relatórios</button>
       </nav>
 
       <div class="sidebar-card">
-        <strong>Login padrão</strong>
-        <span>{{ default_email }}</span>
-        <span>Senha: {{ default_password }}</span>
+        <strong>Sessão</strong>
+        <span id="sessionUserName">Aguardando login</span>
+        <span id="sessionUserMeta">Entre para carregar o seu perfil</span>
       </div>
 
       <div class="sidebar-card soft">
         <strong>Ações rápidas</strong>
-        <button class="full secondary" id="btnResetLaunches">Zerar lançamentos</button>
-        <button class="full danger" id="btnResetAll">Apagar tudo</button>
+        <button class="full secondary admin-only" id="btnResetLaunches">Zerar lançamentos</button>
+        <button class="full danger admin-only" id="btnResetAll">Apagar tudo</button>
         <button class="full ghost" id="btnLogout">Sair</button>
       </div>
     </aside>
@@ -237,7 +238,7 @@
               A importação não substitui os lançamentos manuais. Ela cria snapshots mensais e rendimentos importados para alimentar o patrimônio e os relatórios.
             </div>
             <div class="actions-inline stacked">
-              <button id="btnImportSample">Importar APLICACOES_2026.xlsx do pacote</button>
+              <button id="btnImportSample" class="admin-only">Importar APLICACOES_2026.xlsx do pacote</button>
               <form id="importForm" class="upload-form">
                 <input type="file" id="importFile" accept=".xlsx" />
                 <button type="submit" class="secondary">Importar arquivo .xlsx enviado</button>
@@ -253,6 +254,127 @@
         <div class="card">
           <div class="section-head compact"><div><h3>Log de importações</h3><small>Resumo das últimas execuções.</small></div></div>
           <div class="table-wrap"><table><thead><tr><th>Quando</th><th>Arquivo</th><th>Resumo</th></tr></thead><tbody id="importsTable"></tbody></table></div>
+        </div>
+      </section>
+
+      <section class="page" id="administracao">
+        <div class="section-head">
+          <div>
+            <h3>Administração e segurança</h3>
+            <small>Cadastre usuários, altere login e senha, gere backup e restaure a base quando necessário.</small>
+          </div>
+        </div>
+
+        <div class="grid-cards admin-stats-grid" id="adminStats"></div>
+
+        <div class="card" id="adminAccessNotice">
+          <div class="section-head compact">
+            <div>
+              <h3>Meu acesso</h3>
+              <small id="profileSecurityHint">Atualize o seu login e mantenha a senha protegida.</small>
+            </div>
+            <div id="profileRoleBadge"></div>
+          </div>
+          <form id="profileForm" class="forms-grid">
+            <div class="field"><label>Nome</label><input id="profileName" required /></div>
+            <div class="field"><label>Login (e-mail)</label><input id="profileEmail" type="email" required /></div>
+            <div class="actions-inline full">
+              <button type="submit">Salvar meus dados</button>
+            </div>
+          </form>
+
+          <div class="section-head compact section-space-top">
+            <div>
+              <h3>Trocar senha</h3>
+              <small>Use sua senha atual para definir uma nova senha segura.</small>
+            </div>
+          </div>
+          <form id="passwordForm" class="forms-grid">
+            <div class="field"><label>Senha atual</label><input id="profileCurrentPassword" type="password" required /></div>
+            <div class="field"><label>Nova senha</label><input id="profileNewPassword" type="password" required /></div>
+            <div class="field"><label>Confirmar nova senha</label><input id="profileConfirmPassword" type="password" required /></div>
+            <div class="field full helper-text">A nova senha deve ter pelo menos 8 caracteres.</div>
+            <div class="actions-inline full">
+              <button type="submit">Atualizar senha</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="two-col form-layout admin-only" id="adminUsersRow">
+          <div class="card">
+            <div class="section-head compact">
+              <div>
+                <h3>Cadastro de usuários</h3>
+                <small>Crie novos acessos ou edite nome, login, perfil e status.</small>
+              </div>
+            </div>
+            <form id="userForm" class="forms-grid">
+              <input type="hidden" id="userId" />
+              <div class="field"><label>Nome</label><input id="userName" required /></div>
+              <div class="field"><label>Login (e-mail)</label><input id="userEmail" type="email" required /></div>
+              <div class="field"><label>Perfil</label><select id="userRole"><option value="admin">Administrador</option><option value="user">Usuário</option></select></div>
+              <div class="field">
+                <label>Status</label>
+                <select id="userActive">
+                  <option value="1">Ativo</option>
+                  <option value="0">Inativo</option>
+                </select>
+              </div>
+              <div class="field"><label id="userPasswordLabel">Senha inicial</label><input id="userPassword" type="password" /></div>
+              <div class="field"><label>Confirmar senha</label><input id="userPasswordConfirm" type="password" /></div>
+              <div class="field full helper-text">Ao editar um usuário, deixe a senha em branco se não quiser redefini-la.</div>
+              <div class="actions-inline full">
+                <button type="submit" id="userSubmitLabel">Salvar usuário</button>
+                <button type="button" class="secondary" onclick="clearUserForm()">Cancelar edição</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="card">
+            <div class="section-head compact">
+              <div><h3>Usuários cadastrados</h3><small id="usersCountLabel"></small></div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Usuário</th>
+                    <th>Perfil</th>
+                    <th>Status</th>
+                    <th>Criado em</th>
+                    <th>Ações</th>
+                  </tr>
+                </thead>
+                <tbody id="usersTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card admin-only" id="backupCard">
+          <div class="section-head compact">
+            <div>
+              <h3>Backup e restauração</h3>
+              <small>Baixe um backup completo da base atual ou restaure um backup já gerado.</small>
+            </div>
+          </div>
+          <div class="banner">
+            A restauração substitui os dados atuais do sistema. Faça um backup novo antes de restaurar outro arquivo.
+          </div>
+          <div class="summary-box muted" id="restoreChecklist">
+            <strong>Checklist rápido antes de restaurar</strong><br>
+            1. Gere um backup novo da base atual.<br>
+            2. Confirme que o arquivo pertence a este ambiente.<br>
+            3. Use a confirmação reforçada para evitar sobrescrita acidental.
+          </div>
+          <div class="actions-inline stacked">
+            <button type="button" id="btnDownloadBackup">Baixar backup completo (.zip)</button>
+            <form id="restoreBackupForm" class="upload-form">
+              <input type="file" id="restoreBackupFile" accept=".zip,.db" />
+              <button type="submit" class="secondary">Restaurar backup</button>
+            </form>
+          </div>
+          <div id="backupStatus" class="summary-box muted">Nenhum backup restaurado nesta sessão.</div>
         </div>
       </section>
 
@@ -316,18 +438,43 @@
     </main>
   </div>
 
+  <div class="confirm-overlay hidden" id="restoreConfirmOverlay">
+    <div class="confirm-card">
+      <div class="section-head compact">
+        <div>
+          <h3>Confirmação reforçada de restauração</h3>
+          <small>Essa operação substitui os dados atuais do sistema.</small>
+        </div>
+      </div>
+      <div class="summary-box">
+        Arquivo selecionado: <strong id="restoreConfirmFileName">-</strong><br>
+        Para continuar, digite <strong>RESTAURAR</strong> no campo abaixo.
+      </div>
+      <form id="restoreConfirmForm" class="forms-grid single-col section-space-top">
+        <div class="field">
+          <label>Palavra de confirmação</label>
+          <input id="restoreConfirmText" autocomplete="off" />
+        </div>
+        <div class="actions-inline">
+          <button type="submit">Confirmar restauração</button>
+          <button type="button" class="secondary" id="btnCancelRestoreConfirm">Cancelar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <div class="login-overlay" id="loginOverlay">
     <div class="login-card">
       <div class="brand brand-center">
         <div class="brand-logo">IC</div>
         <div>
           <h1>Entrar no InvestControl</h1>
-          <small>Use o acesso padrão para a primeira execução.</small>
+          <small>Entre com seu login e depois altere seus dados em Administração.</small>
         </div>
       </div>
       <form id="loginForm" class="forms-grid single-col">
-        <div class="field"><label>E-mail</label><input id="loginEmail" value="{{ default_email }}" required /></div>
-        <div class="field"><label>Senha</label><input id="loginPassword" type="password" value="{{ default_password }}" required /></div>
+        <div class="field"><label>E-mail</label><input id="loginEmail" type="email" placeholder="{{ default_email }}" required /></div>
+        <div class="field"><label>Senha</label><input id="loginPassword" type="password" placeholder="Sua senha" required /></div>
         <button type="submit">Entrar</button>
       </form>
     </div>

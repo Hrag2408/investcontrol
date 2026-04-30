@@ -1,5 +1,6 @@
 const state = {
   user: null,
+  users: [],
   dashboard: { kpis: {}, portfolio_by_type: [], recent_movements: [], recent_dividends: [] },
   accounts: [],
   applications: [],
@@ -25,6 +26,7 @@ const typeOptions = [
 const $ = (id) => document.getElementById(id);
 const today = new Date().toISOString().slice(0, 10);
 const currentMonth = new Date().toISOString().slice(0, 7);
+let pendingRestoreFile = null;
 
 function formatCurrency(value) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(value || 0));
@@ -220,6 +222,18 @@ function barList(items, emptyText = 'Sem dados para exibir.') {
   `).join('');
 }
 
+function roleLabel(role) {
+  return role === 'admin' ? 'Administrador' : 'Usuário';
+}
+
+function formatDateTime(value) {
+  if (!value) return '-';
+  const raw = String(value).replace(' ', 'T');
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return escapeHtml(String(value));
+  return parsed.toLocaleString('pt-BR');
+}
+
 function renderDashboard() {
   const kpis = state.dashboard.kpis || {};
   $('dashboardCards').innerHTML = [
@@ -396,6 +410,77 @@ function renderImportSection() {
     : '<tr><td colspan="3" class="table-empty">Nenhum log de importação.</td></tr>';
 }
 
+function renderUsers() {
+  if (!$('usersTable') || !$('usersCountLabel')) return;
+  $('usersCountLabel').textContent = `${state.users.length} usuário(s)`;
+  if (!(state.user && state.user.is_admin)) {
+    $('usersTable').innerHTML = '<tr><td colspan="5" class="table-empty">Somente administradores podem gerenciar usuários.</td></tr>';
+    return;
+  }
+  $('usersTable').innerHTML = state.users.length
+    ? state.users.map((item) => `
+        <tr>
+          <td><strong>${escapeHtml(item.name)}</strong><br><small>${escapeHtml(item.email)}</small></td>
+          <td><span class="badge ${item.role === 'admin' ? 'admin' : 'user'}">${roleLabel(item.role)}</span></td>
+          <td><span class="badge ${item.active ? 'active' : 'inactive'}">${item.active ? 'Ativo' : 'Inativo'}</span></td>
+          <td>${formatDateTime(item.created_at)}</td>
+          <td>
+            <div class="table-actions">
+              <button class="secondary" onclick="editUser(${item.id})">Editar</button>
+              <button class="secondary" onclick="toggleUserStatus(${item.id})">${item.active ? 'Desativar' : 'Ativar'}</button>
+              <button onclick="resetUserPasswordPrompt(${item.id})">Nova senha</button>
+            </div>
+          </td>
+        </tr>
+      `).join('')
+    : '<tr><td colspan="5" class="table-empty">Nenhum usuário cadastrado.</td></tr>';
+}
+
+function renderAdminStats() {
+  if (!$('adminStats')) return;
+  const user = state.user || {};
+  const isAdmin = Boolean(user.is_admin || user.role === 'admin');
+  const totalUsers = state.users.length;
+  const activeUsers = state.users.filter((item) => item.active).length;
+  const adminUsers = state.users.filter((item) => item.role === 'admin' && item.active).length;
+  const inactiveUsers = state.users.filter((item) => !item.active).length;
+
+  const cards = isAdmin
+    ? [
+        `<div class="card metric-card admin-highlight"><div class="metric-label">Usuários cadastrados</div><div class="metric-value">${totalUsers}</div><div class="metric-foot">${activeUsers} ativo(s) no sistema</div></div>`,
+        `<div class="card metric-card admin-highlight"><div class="metric-label">Administradores ativos</div><div class="metric-value">${adminUsers}</div><div class="metric-foot">Proteção mínima para gestão</div></div>`,
+        `<div class="card metric-card warning-card"><div class="metric-label">Usuários inativos</div><div class="metric-value">${inactiveUsers}</div><div class="metric-foot">Revise acessos antigos quando necessário</div></div>`,
+        `<div class="card metric-card"><div class="metric-label">Backup e restore</div><div class="metric-value">OK</div><div class="metric-foot">Fluxo com confirmação reforçada</div></div>`,
+      ]
+    : [
+        `<div class="card metric-card"><div class="metric-label">Meu perfil</div><div class="metric-value">${escapeHtml(user.name || '-')}</div><div class="metric-foot">Atualize login e dados sempre que necessário</div></div>`,
+        `<div class="card metric-card"><div class="metric-label">Meu acesso</div><div class="metric-value">${roleLabel(user.role || 'user')}</div><div class="metric-foot">Funções administrativas ficam ocultas para seu perfil</div></div>`,
+      ];
+  $('adminStats').innerHTML = cards.join('');
+}
+
+function updatePermissionUI(isAdmin) {
+  document.querySelectorAll('.admin-only').forEach((element) => {
+    element.classList.toggle('hidden', !isAdmin);
+  });
+}
+
+function renderAdministration() {
+  const user = state.user || {};
+  const isAdmin = Boolean(user.is_admin || user.role === 'admin');
+  $('sessionUserName').textContent = user.name || 'Aguardando login';
+  $('sessionUserMeta').textContent = user.email ? `${user.email} · ${roleLabel(user.role)}` : 'Entre para carregar o seu perfil';
+  updatePermissionUI(isAdmin);
+  $('profileName').value = user.name || '';
+  $('profileEmail').value = user.email || '';
+  $('profileRoleBadge').innerHTML = `<span class="badge ${isAdmin ? 'admin' : 'user'}">${roleLabel(user.role || 'user')}</span>`;
+  $('profileSecurityHint').textContent = isAdmin
+    ? 'Você pode alterar seu login, trocar a senha e também administrar usuários, backups e ações críticas.'
+    : 'Você pode alterar seu login e trocar sua senha. A gestão de usuários, backups e ações críticas fica oculta para o seu perfil.';
+  renderAdminStats();
+  renderUsers();
+}
+
 function buildMonthlyReportRows(month) {
   return state.applications.map((app) => {
     const allMovements = state.movements.filter((item) => String(item.application_id) === String(app.id));
@@ -553,6 +638,19 @@ function clearEarningForm() {
   recalculateEarningFields();
 }
 
+function clearUserForm() {
+  if (!$('userId')) return;
+  $('userId').value = '';
+  $('userName').value = '';
+  $('userEmail').value = '';
+  $('userRole').value = 'user';
+  $('userActive').value = '1';
+  $('userPassword').value = '';
+  $('userPasswordConfirm').value = '';
+  $('userPasswordLabel').textContent = 'Senha inicial';
+  $('userSubmitLabel').textContent = 'Salvar usuário';
+}
+
 function findById(collection, id) {
   return collection.find((item) => String(item.id) === String(id));
 }
@@ -622,6 +720,63 @@ function editEarning(id) {
   recalculateEarningFields(item.percent ? 'percent' : 'amount');
 }
 
+function editUser(id) {
+  const item = findById(state.users, id);
+  if (!item) return;
+  setActiveSection('administracao');
+  $('userId').value = item.id;
+  $('userName').value = item.name || '';
+  $('userEmail').value = item.email || '';
+  $('userRole').value = item.role || 'user';
+  $('userActive').value = item.active ? '1' : '0';
+  $('userPassword').value = '';
+  $('userPasswordConfirm').value = '';
+  $('userPasswordLabel').textContent = 'Nova senha (opcional)';
+  $('userSubmitLabel').textContent = 'Salvar alterações';
+}
+
+async function toggleUserStatus(id) {
+  const item = findById(state.users, id);
+  if (!item) return;
+  try {
+    const data = await api(`/api/users/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: item.name,
+        email: item.email,
+        role: item.role,
+        active: !item.active,
+      }),
+    });
+    showFlash(data.message || 'Status do usuário atualizado.', 'success');
+    await loadBootstrap();
+    setActiveSection('administracao');
+  } catch (error) {
+    showFlash(error.message, 'error');
+  }
+}
+
+async function resetUserPasswordPrompt(id) {
+  const item = findById(state.users, id);
+  if (!item) return;
+  const password = window.prompt(`Digite a nova senha para ${item.name}:`);
+  if (!password) return;
+  const confirmPassword = window.prompt(`Confirme a nova senha para ${item.name}:`);
+  if (password !== confirmPassword) {
+    showFlash('As senhas digitadas não conferem.', 'error');
+    return;
+  }
+  try {
+    const data = await api(`/api/users/${id}/password`, {
+      method: 'POST',
+      body: JSON.stringify({ new_password: password }),
+    });
+    showFlash(data.message || 'Senha redefinida com sucesso.', 'success');
+  } catch (error) {
+    showFlash(error.message, 'error');
+  }
+}
+
 async function deleteEntity(url, label) {
   if (!confirm(`Confirma excluir ${label}?`)) return;
   const data = await api(url, { method: 'DELETE' });
@@ -638,6 +793,7 @@ const deleteEarning = (id) => deleteEntity(`/api/earnings/${id}`, 'este rendimen
 async function loadBootstrap(month = $('reportMonth').value || currentMonth) {
   const data = await api(`/api/bootstrap?month=${month}`);
   state.user = data.user;
+  state.users = data.users || [];
   state.dashboard = data.dashboard;
   state.accounts = data.accounts;
   state.applications = data.applications;
@@ -656,6 +812,7 @@ async function loadBootstrap(month = $('reportMonth').value || currentMonth) {
   renderDividends();
   renderEarnings();
   renderImportSection();
+  renderAdministration();
   renderReport();
 }
 
@@ -773,6 +930,7 @@ function bindForms() {
       });
       showFlash(data.message || 'Login realizado.', 'success');
       await loadBootstrap();
+      $('loginPassword').value = '';
     } catch (error) {
       showFlash(error.message, 'error');
     }
@@ -797,7 +955,121 @@ function bindForms() {
       showFlash(error.message, 'error');
     }
   });
+
+  $('profileForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    try {
+      const data = await api('/api/profile', {
+        method: 'PUT',
+        body: JSON.stringify({
+          name: $('profileName').value,
+          email: $('profileEmail').value,
+        }),
+      });
+      showFlash(data.message || 'Seus dados foram atualizados.', 'success');
+      await loadBootstrap();
+      setActiveSection('administracao');
+    } catch (error) {
+      showFlash(error.message, 'error');
+    }
+  });
+
+  $('passwordForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const newPassword = $('profileNewPassword').value;
+    const confirmPassword = $('profileConfirmPassword').value;
+    if (newPassword !== confirmPassword) {
+      showFlash('A confirmação da nova senha não confere.', 'error');
+      return;
+    }
+    try {
+      const data = await api('/api/profile/password', {
+        method: 'POST',
+        body: JSON.stringify({
+          current_password: $('profileCurrentPassword').value,
+          new_password: newPassword,
+        }),
+      });
+      showFlash(data.message || 'Senha atualizada.', 'success');
+      $('profileCurrentPassword').value = '';
+      $('profileNewPassword').value = '';
+      $('profileConfirmPassword').value = '';
+    } catch (error) {
+      showFlash(error.message, 'error');
+    }
+  });
+
+  $('userForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const editId = $('userId').value;
+    const password = $('userPassword').value.trim();
+    const confirmPassword = $('userPasswordConfirm').value.trim();
+    if (!editId && !password) {
+      showFlash('Informe uma senha inicial para o novo usuário.', 'error');
+      return;
+    }
+    if ((password || confirmPassword) && password !== confirmPassword) {
+      showFlash('As senhas informadas para o usuário não conferem.', 'error');
+      return;
+    }
+    try {
+      const payload = {
+        name: $('userName').value,
+        email: $('userEmail').value,
+        role: $('userRole').value,
+        active: $('userActive').value === '1',
+      };
+      let data;
+      if (editId) {
+        data = await api(`/api/users/${editId}`, { method: 'PUT', body: JSON.stringify(payload) });
+        if (password) {
+          await api(`/api/users/${editId}/password`, { method: 'POST', body: JSON.stringify({ new_password: password }) });
+        }
+      } else {
+        data = await api('/api/users', {
+          method: 'POST',
+          body: JSON.stringify({ ...payload, password }),
+        });
+      }
+      showFlash(data.message || 'Usuário salvo com sucesso.', 'success');
+      clearUserForm();
+      await loadBootstrap();
+      setActiveSection('administracao');
+    } catch (error) {
+      showFlash(error.message, 'error');
+    }
+  });
+
+  $('restoreBackupForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const file = $('restoreBackupFile').files[0];
+    if (!file) {
+      showFlash('Selecione um arquivo de backup .zip ou .db.', 'error');
+      return;
+    }
+    openRestoreConfirmation(file);
+  });
+
+  $('restoreConfirmForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (($('restoreConfirmText').value || '').trim().toUpperCase() !== 'RESTAURAR') {
+      showFlash('Digite RESTAURAR para confirmar a restauração.', 'error');
+      return;
+    }
+    if (!pendingRestoreFile) {
+      showFlash('Nenhum arquivo de restauração pendente.', 'error');
+      closeRestoreConfirmation();
+      return;
+    }
+    try {
+      await restoreBackupNow(pendingRestoreFile);
+      closeRestoreConfirmation();
+    } catch (error) {
+      showFlash(error.message, 'error');
+    }
+  });
 }
+
 
 function renderImportSummary(summary, message) {
   if (!summary) return;
@@ -807,6 +1079,33 @@ function renderImportSummary(summary, message) {
     Contas criadas: ${summary.accounts_created || 0} · Aplicações criadas: ${summary.applications_created || 0}<br>
     Snapshots importados: ${summary.snapshots_imported || 0} · Rendimentos importados: ${summary.earnings_imported || 0}
   `;
+}
+
+function openRestoreConfirmation(file) {
+  pendingRestoreFile = file;
+  $('restoreConfirmFileName').textContent = file?.name || '-';
+  $('restoreConfirmText').value = '';
+  $('restoreConfirmOverlay').classList.remove('hidden');
+  $('restoreConfirmText').focus();
+}
+
+function closeRestoreConfirmation() {
+  pendingRestoreFile = null;
+  $('restoreConfirmText').value = '';
+  $('restoreConfirmOverlay').classList.add('hidden');
+}
+
+async function restoreBackupNow(file) {
+  const form = new FormData();
+  form.append('file', file);
+  const data = await api('/api/backup/restore', { method: 'POST', body: form });
+  $('backupStatus').className = 'summary-box';
+  $('backupStatus').textContent = data.message || 'Backup restaurado.';
+  $('restoreBackupFile').value = '';
+  $('sessionUserName').textContent = 'Backup restaurado';
+  $('sessionUserMeta').textContent = 'Faça login novamente para continuar';
+  $('loginOverlay').classList.remove('hidden');
+  showFlash(data.message || 'Backup restaurado com sucesso.', 'info');
 }
 
 function bindButtons() {
@@ -864,6 +1163,17 @@ function bindButtons() {
     }
   });
 
+  $('btnDownloadBackup').addEventListener('click', () => {
+    $('backupStatus').className = 'summary-box';
+    $('backupStatus').textContent = 'Download do backup iniciado.';
+    window.location.href = '/api/backup/download';
+  });
+
+  $('btnCancelRestoreConfirm').addEventListener('click', () => closeRestoreConfirmation());
+  $('restoreConfirmOverlay').addEventListener('click', (event) => {
+    if (event.target === $('restoreConfirmOverlay')) closeRestoreConfirmation();
+  });
+
   $('btnLogout').addEventListener('click', async () => {
     try {
       await api('/api/logout', { method: 'POST' });
@@ -871,6 +1181,8 @@ function bindButtons() {
       // ignore
     }
     $('loginOverlay').classList.remove('hidden');
+    $('sessionUserName').textContent = 'Sessão encerrada';
+    $('sessionUserMeta').textContent = 'Faça login novamente para continuar';
     showFlash('Sessão encerrada.', 'info');
   });
 }
@@ -884,6 +1196,7 @@ function setDefaults() {
   $('earningCompetence').value = currentMonth;
   $('reportMonth').value = currentMonth;
   fillStaticTypes();
+  clearUserForm();
   recalculateEarningFields();
 }
 
@@ -905,6 +1218,7 @@ window.clearApplicationForm = clearApplicationForm;
 window.clearMovementForm = clearMovementForm;
 window.clearDividendForm = clearDividendForm;
 window.clearEarningForm = clearEarningForm;
+window.clearUserForm = clearUserForm;
 window.recalculateEarningFields = recalculateEarningFields;
 window.useProjectedBalanceForEarning = useProjectedBalanceForEarning;
 window.editAccount = editAccount;
@@ -912,6 +1226,10 @@ window.editApplication = editApplication;
 window.editMovement = editMovement;
 window.editDividend = editDividend;
 window.editEarning = editEarning;
+window.editUser = editUser;
+window.toggleUserStatus = toggleUserStatus;
+window.resetUserPasswordPrompt = resetUserPasswordPrompt;
+window.closeRestoreConfirmation = closeRestoreConfirmation;
 window.deleteAccount = (id) => deleteAccount(id).catch((error) => showFlash(error.message, 'error'));
 window.deleteApplication = (id) => deleteApplication(id).catch((error) => showFlash(error.message, 'error'));
 window.deleteMovement = (id) => deleteMovement(id).catch((error) => showFlash(error.message, 'error'));
