@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>InvestControl Real</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-logo">IC</div>
+        <div>
+          <h1>InvestControl</h1>
+          <small>real + desktop + web</small>
+        </div>
+      </div>
+
+      <nav class="menu" id="menuNav">
+        <button class="active" data-section="dashboard">Dashboard</button>
+        <button data-section="contas">Contas</button>
+        <button data-section="aplicacoes">Aplicações</button>
+        <button data-section="movimentos">Aportes / Resgates</button>
+        <button data-section="dividendos">Dividendos</button>
+        <button data-section="rendimentos">Rendimentos</button>
+        <button data-section="importacao">Importação</button>
+        <button data-section="alugueis-dashboard">Aluguéis</button>
+        <button data-section="imoveis">Imóveis</button>
+        <button data-section="inquilinos">Inquilinos</button>
+        <button data-section="contratos">Contratos</button>
+        <button data-section="cobrancas">Cobranças</button>
+        <button data-section="recebimentos">Recebimentos</button>
+        <button data-section="administracao">Administração</button>
+        <button data-section="relatorios">Relatórios</button>
+      </nav>
+
+      <div class="sidebar-card">
+        <strong>Sessão</strong>
+        <span id="sessionUserName">Aguardando login</span>
+        <span id="sessionUserMeta">Entre para carregar o seu perfil</span>
+      </div>
+
+      <div class="sidebar-card soft">
+        <strong>Ações rápidas</strong>
+        <button class="full secondary admin-only" id="btnResetLaunches">Zerar lançamentos</button>
+        <button class="full danger admin-only" id="btnResetAll">Apagar tudo</button>
+        <button class="full ghost" id="btnLogout">Sair</button>
+      </div>
+    </aside>
+
+    <main class="content">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Controle real</p>
+          <h2>Cadastros, lançamentos, importação da planilha e relatórios mensais</h2>
+          <p class="hero-text">A base abre zerada para você começar do zero, mas já traz importação da planilha APLICACOES_2026.xlsx e launcher desktop.</p>
+        </div>
+        <div class="hero-badges">
+          <span class="chip">SQLite real</span>
+          <span class="chip success">CRUD completo</span>
+          <span class="chip warning">Importação XLSX</span>
+        </div>
+      </header>
+
+      <div id="flash"></div>
+
+      <section class="page active" id="dashboard">
+        <div class="section-head">
+          <div>
+            <h3>Visão geral</h3>
+            <small>Resumo das contas, aplicações e patrimônio.</small>
+          </div>
+          <button class="secondary" id="btnRefreshDashboard">Atualizar</button>
+        </div>
+        <div class="grid-cards" id="dashboardCards"></div>
+        <div class="two-col">
+          <div class="card">
+            <div class="section-head compact">
+              <div>
+                <h3>Patrimônio por tipo</h3>
+                <small>Com base no último snapshot importado ou no valor base calculado.</small>
+              </div>
+            </div>
+            <div class="bar-list" id="portfolioBars"></div>
+          </div>
+          <div class="card">
+            <div class="section-head compact">
+              <div>
+                <h3>Últimos aportes e resgates</h3>
+                <small>5 registros mais recentes.</small>
+              </div>
+            </div>
+            <div class="table-wrap"><table><thead><tr><th>Data</th><th>Aplicação</th><th>Tipo</th><th>Valor</th></tr></thead><tbody id="recentMovements"></tbody></table></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="section-head compact">
+            <div>
+              <h3>Últimos dividendos</h3>
+              <small>5 dividendos líquidos mais recentes.</small>
+            </div>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>Data</th><th>Aplicação</th><th>Valor líquido</th></tr></thead><tbody id="recentDividends"></tbody></table></div>
+        </div>
+      </section>
+
+      <section class="page" id="contas">
+        <div class="two-col form-layout">
+          <div class="card">
+            <div class="section-head compact"><div><h3>Cadastro de contas</h3><small>Crie, edite e exclua contas.</small></div></div>
+            <form id="accountForm" class="forms-grid">
+              <input type="hidden" id="accountId" />
+              <div class="field"><label>Nome da conta</label><input id="accountName" required /></div>
+              <div class="field"><label>Instituição</label><input id="accountInstitution" required /></div>
+              <div class="field"><label>Moeda</label><input id="accountCurrency" value="BRL" /></div>
+              <div class="field full"><label>Observações</label><textarea id="accountNotes" rows="3"></textarea></div>
+              <div class="actions-inline full">
+                <button type="submit">Salvar conta</button>
+                <button type="button" class="secondary" onclick="clearAccountForm()">Cancelar edição</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <div class="section-head compact"><div><h3>Contas cadastradas</h3><small id="accountsCountLabel"></small></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Conta</th><th>Instituição</th><th>Moeda</th><th>Aplicações</th><th>Ações</th></tr></thead><tbody id="accountsTable"></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="aplicacoes">
+        <div class="two-col form-layout">
+          <div class="card">
+            <div class="section-head compact"><div><h3>Cadastro de aplicações</h3><small>Relacionadas às contas cadastradas.</small></div></div>
+            <form id="applicationForm" class="forms-grid">
+              <input type="hidden" id="applicationId" />
+              <div class="field"><label>Conta</label><select id="applicationAccount" required></select></div>
+              <div class="field"><label>Tipo</label><select id="applicationType"></select></div>
+              <div class="field"><label>Nome da aplicação</label><input id="applicationName" required /></div>
+              <div class="field"><label>Código</label><input id="applicationCode" /></div>
+              <div class="field"><label>Valor inicial</label><input id="applicationInitialValue" type="number" min="0" step="0.01" value="0" /></div>
+              <div class="field full"><label>Observações</label><textarea id="applicationNotes" rows="3"></textarea></div>
+              <div class="actions-inline full">
+                <button type="submit">Salvar aplicação</button>
+                <button type="button" class="secondary" onclick="clearApplicationForm()">Cancelar edição</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <div class="section-head compact"><div><h3>Aplicações cadastradas</h3><small id="applicationsCountLabel"></small></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Aplicação</th><th>Conta</th><th>Tipo</th><th>Inicial</th><th>Ações</th></tr></thead><tbody id="applicationsTable"></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="movimentos">
+        <div class="two-col form-layout">
+          <div class="card">
+            <div class="section-head compact"><div><h3>Lançamentos de aporte e resgate</h3><small>Comece do zero e registre tudo aqui.</small></div></div>
+            <form id="movementForm" class="forms-grid">
+              <input type="hidden" id="movementId" />
+              <div class="field"><label>Tipo</label><select id="movementKind"><option value="aporte">Aporte</option><option value="resgate">Resgate</option></select></div>
+              <div class="field"><label>Aplicação</label><select id="movementApplication" required></select></div>
+              <div class="field"><label>Data</label><input id="movementDate" type="date" required /></div>
+              <div class="field"><label>Competência</label><input id="movementCompetence" type="month" required /></div>
+              <div class="field"><label>Valor</label><input id="movementAmount" type="number" min="0" step="0.01" required /></div>
+              <div class="field full"><label>Observações</label><textarea id="movementNotes" rows="3"></textarea></div>
+              <div class="actions-inline full">
+                <button type="submit">Salvar lançamento</button>
+                <button type="button" class="secondary" onclick="clearMovementForm()">Cancelar edição</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <div class="section-head compact"><div><h3>Histórico de aportes e resgates</h3><small id="movementsCountLabel"></small></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Data</th><th>Aplicação</th><th>Tipo</th><th>Valor</th><th>Ações</th></tr></thead><tbody id="movementsTable"></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="dividendos">
+        <div class="two-col form-layout">
+          <div class="card">
+            <div class="section-head compact"><div><h3>Dividendos</h3><small>Cadastro manual com edição e exclusão.</small></div></div>
+            <form id="dividendForm" class="forms-grid">
+              <input type="hidden" id="dividendId" />
+              <div class="field"><label>Aplicação</label><select id="dividendApplication" required></select></div>
+              <div class="field"><label>Data de pagamento</label><input id="dividendDate" type="date" required /></div>
+              <div class="field"><label>Competência</label><input id="dividendCompetence" type="month" required /></div>
+              <div class="field"><label>Valor bruto</label><input id="dividendGross" type="number" min="0" step="0.01" required /></div>
+              <div class="field"><label>Valor líquido</label><input id="dividendNet" type="number" min="0" step="0.01" required /></div>
+              <div class="field full"><label>Observações</label><textarea id="dividendNotes" rows="3"></textarea></div>
+              <div class="actions-inline full">
+                <button type="submit">Salvar dividendo</button>
+                <button type="button" class="secondary" onclick="clearDividendForm()">Cancelar edição</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <div class="section-head compact"><div><h3>Histórico de dividendos</h3><small id="dividendsCountLabel"></small></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Pagamento</th><th>Aplicação</th><th>Bruto</th><th>Líquido</th><th>Ações</th></tr></thead><tbody id="dividendsTable"></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="rendimentos">
+        <div class="two-col form-layout">
+          <div class="card">
+            <div class="section-head compact"><div><h3>Rendimentos</h3><small>Manuais ou importados da planilha.</small></div></div>
+            <form id="earningForm" class="forms-grid">
+              <input type="hidden" id="earningId" />
+              <div class="field"><label>Aplicação</label><select id="earningApplication" required></select></div>
+              <div class="field"><label>Data de pagamento</label><input id="earningDate" type="date" required /></div>
+              <div class="field"><label>Competência</label><input id="earningCompetence" type="month" required /></div>
+              <div class="field"><label>Saldo anterior</label><input id="earningPreviousBalance" type="number" min="0" step="0.01" oninput="recalculateEarningFields('previous')" /></div>
+              <div class="field"><label>Saldo atual</label><input id="earningCurrentBalance" type="number" min="0" step="0.01" oninput="recalculateEarningFields('current')" /></div>
+              <div class="field"><label>Rendimento calculado</label><input id="earningAmount" type="number" min="0" step="0.01" readonly /></div>
+              <div class="field"><label>Percentual calculado (%)</label><input id="earningPercent" type="number" min="0" step="0.0001" readonly /></div>
+              <div class="field full">
+                <label>Leitura do mês</label>
+                <div class="actions-inline">
+                  <button type="button" class="secondary" onclick="useProjectedBalanceForEarning()">Usar saldo projetado como saldo anterior</button>
+                </div>
+                <div id="earningCalcHint" class="summary-box muted">Informe o saldo anterior e o saldo atual. O sistema calculará automaticamente o rendimento em R$ e a rentabilidade do período.</div>
+              </div>
+              <div class="field full"><label>Observações</label><textarea id="earningNotes" rows="3"></textarea></div>
+              <div class="actions-inline full">
+                <button type="submit">Salvar rendimento</button>
+                <button type="button" class="secondary" onclick="clearEarningForm()">Cancelar edição</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <div class="section-head compact"><div><h3>Histórico de rendimentos</h3><small id="earningsCountLabel"></small></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Pagamento</th><th>Aplicação</th><th>Saldo anterior</th><th>Valor</th><th>% do saldo</th><th>Saldo atual</th><th>Origem</th><th>Ações</th></tr></thead><tbody id="earningsTable"></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="importacao">
+        <div class="two-col form-layout">
+          <div class="card">
+            <div class="section-head compact"><div><h3>Importar planilha</h3><small>Importa contas, aplicações, snapshots e rendimentos automaticamente.</small></div></div>
+            <div class="banner">
+              A importação não substitui os lançamentos manuais. Ela cria snapshots mensais e rendimentos importados para alimentar o patrimônio e os relatórios.
+            </div>
+            <div class="actions-inline stacked">
+              <button id="btnImportSample" class="admin-only">Importar APLICACOES_2026.xlsx do pacote</button>
+              <form id="importForm" class="upload-form">
+                <input type="file" id="importFile" accept=".xlsx" />
+                <button type="submit" class="secondary">Importar arquivo .xlsx enviado</button>
+              </form>
+            </div>
+            <div id="importSummary" class="summary-box muted">Nenhuma importação executada nesta sessão.</div>
+          </div>
+          <div class="card">
+            <div class="section-head compact"><div><h3>Snapshots importados</h3><small>Últimos saldos mensais lidos da planilha.</small></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Mês</th><th>Conta</th><th>Aplicação</th><th>Saldo</th><th>Origem</th></tr></thead><tbody id="snapshotsTable"></tbody></table></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="section-head compact"><div><h3>Log de importações</h3><small>Resumo das últimas execuções.</small></div></div>
+          <div class="table-wrap"><table><thead><tr><th>Quando</th><th>Arquivo</th><th>Resumo</th></tr></thead><tbody id="importsTable"></tbody></table></div>
+        </div>
+      </section>
+
+
+      <section class="page" id="alugueis-dashboard">
+        <div class="section-head">
+          <div>
+            <h3>Módulo de aluguéis</h3>
+            <small>Visão geral dos imóveis alugados, cobranças pendentes e recebimentos recentes.</small>
+          </div>
+          <div class="actions-inline">
+            <input id="rentalReportMonth" type="month" />
+            <button class="secondary" id="btnRefreshRentalModule">Atualizar módulo</button>
+          </div>
+        </div>
+        <div class="grid-cards" id="rentalDashboardCards"></div>
+        <div class="two-col">
+          <div class="card">
+            <div class="section-head compact"><div><h3>Cobranças em aberto</h3><small>Próximas cobranças ou valores em atraso.</small></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Vencimento</th><th>Imóvel / Inquilino</th><th>Competência</th><th>Saldo</th><th>Status</th></tr></thead><tbody id="rentalOpenChargesTable"></tbody></table></div>
+          </div>
+          <div class="card">
+            <div class="section-head compact"><div><h3>Recebimentos recentes</h3><small>Últimos recebimentos lançados.</small></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Data</th><th>Imóvel / Inquilino</th><th>Competência</th><th>Valor</th></tr></thead><tbody id="rentalRecentReceiptsTable"></tbody></table></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="section-head compact">
+            <div>
+              <h3>Resumo por competência</h3>
+              <small>Leitura rápida do mês selecionado no módulo de aluguéis.</small>
+            </div>
+          </div>
+          <div class="grid-cards" id="rentalReportCards"></div>
+          <div class="table-wrap"><table><thead><tr><th>Imóvel</th><th>Inquilino</th><th>Competência</th><th>Vencimento</th><th>Total</th><th>Recebido</th><th>Saldo</th><th>Status</th></tr></thead><tbody id="rentalReportTable"></tbody></table></div>
+        </div>
+      </section>
+
+      <section class="page" id="imoveis">
+        <div class="two-col form-layout">
+          <div class="card">
+            <div class="section-head compact"><div><h3>Cadastro de imóveis</h3><small>Organize imóveis, endereço e status de disponibilidade.</small></div></div>
+            <form id="rentalPropertyForm" class="forms-grid">
+              <input type="hidden" id="rentalPropertyId" />
+              <div class="field"><label>Nome do imóvel</label><input id="rentalPropertyName" required /></div>
+              <div class="field"><label>Código / referência</label><input id="rentalPropertyCode" /></div>
+              <div class="field"><label>Categoria</label><input id="rentalPropertyCategory" value="Residencial" /></div>
+              <div class="field"><label>CEP</label><input id="rentalPropertyZip" /></div>
+              <div class="field full"><label>Endereço</label><input id="rentalPropertyAddress" /></div>
+              <div class="field"><label>Bairro</label><input id="rentalPropertyDistrict" /></div>
+              <div class="field"><label>Cidade</label><input id="rentalPropertyCity" /></div>
+              <div class="field"><label>UF</label><input id="rentalPropertyState" maxlength="2" /></div>
+              <div class="field"><label>Status</label><select id="rentalPropertyActive"><option value="1">Ativo</option><option value="0">Inativo</option></select></div>
+              <div class="field full"><label>Observações</label><textarea id="rentalPropertyNotes" rows="3"></textarea></div>
+              <div class="actions-inline full">
+                <button type="submit">Salvar imóvel</button>
+                <button type="button" class="secondary" onclick="clearRentalPropertyForm()">Cancelar edição</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <div class="section-head compact"><div><h3>Imóveis cadastrados</h3><small id="rentalPropertiesCountLabel"></small></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Imóvel</th><th>Localização</th><th>Status</th><th>Ações</th></tr></thead><tbody id="rentalPropertiesTable"></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="inquilinos">
+        <div class="two-col form-layout">
+          <div class="card">
+            <div class="section-head compact"><div><h3>Cadastro de inquilinos</h3><small>Mantenha contatos, documento e observações.</small></div></div>
+            <form id="rentalTenantForm" class="forms-grid">
+              <input type="hidden" id="rentalTenantId" />
+              <div class="field"><label>Nome</label><input id="rentalTenantName" required /></div>
+              <div class="field"><label>Documento</label><input id="rentalTenantDocument" /></div>
+              <div class="field"><label>E-mail</label><input id="rentalTenantEmail" type="email" /></div>
+              <div class="field"><label>Telefone</label><input id="rentalTenantPhone" /></div>
+              <div class="field"><label>Status</label><select id="rentalTenantActive"><option value="1">Ativo</option><option value="0">Inativo</option></select></div>
+              <div class="field full"><label>Observações</label><textarea id="rentalTenantNotes" rows="3"></textarea></div>
+              <div class="actions-inline full">
+                <button type="submit">Salvar inquilino</button>
+                <button type="button" class="secondary" onclick="clearRentalTenantForm()">Cancelar edição</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <div class="section-head compact"><div><h3>Inquilinos cadastrados</h3><small id="rentalTenantsCountLabel"></small></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Inquilino</th><th>Contato</th><th>Status</th><th>Ações</th></tr></thead><tbody id="rentalTenantsTable"></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="contratos">
+        <div class="two-col form-layout">
+          <div class="card">
+            <div class="section-head compact"><div><h3>Contratos de locação</h3><small>Defina o imóvel, o inquilino e os valores cobrados todo mês.</small></div></div>
+            <form id="rentalContractForm" class="forms-grid">
+              <input type="hidden" id="rentalContractId" />
+              <div class="field"><label>Imóvel</label><select id="rentalContractProperty" required></select></div>
+              <div class="field"><label>Inquilino</label><select id="rentalContractTenant" required></select></div>
+              <div class="field"><label>Código do contrato</label><input id="rentalContractCode" /></div>
+              <div class="field"><label>Status</label><select id="rentalContractStatus"><option value="ativo">Ativo</option><option value="encerrado">Encerrado</option><option value="cancelado">Cancelado</option></select></div>
+              <div class="field"><label>Início</label><input id="rentalContractStart" type="date" required /></div>
+              <div class="field"><label>Fim</label><input id="rentalContractEnd" type="date" /></div>
+              <div class="field"><label>Dia de vencimento</label><input id="rentalContractDueDay" type="number" min="1" max="31" value="5" /></div>
+              <div class="field"><label>Aluguel</label><input id="rentalContractRentAmount" type="number" min="0" step="0.01" value="0" /></div>
+              <div class="field"><label>Condomínio</label><input id="rentalContractCondoAmount" type="number" min="0" step="0.01" value="0" /></div>
+              <div class="field"><label>IPTU</label><input id="rentalContractIptuAmount" type="number" min="0" step="0.01" value="0" /></div>
+              <div class="field"><label>Outros</label><input id="rentalContractOtherAmount" type="number" min="0" step="0.01" value="0" /></div>
+              <div class="field"><label>Índice reajuste</label><input id="rentalContractAdjustmentIndex" placeholder="IGP-M, IPCA..." /></div>
+              <div class="field"><label>Forma padrão recebimento</label><input id="rentalContractPaymentMethod" placeholder="PIX, TED, boleto..." /></div>
+              <div class="field full"><label>Observações</label><textarea id="rentalContractNotes" rows="3"></textarea></div>
+              <div class="actions-inline full">
+                <button type="submit">Salvar contrato</button>
+                <button type="button" class="secondary" onclick="clearRentalContractForm()">Cancelar edição</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <div class="section-head compact"><div><h3>Contratos cadastrados</h3><small id="rentalContractsCountLabel"></small></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Contrato</th><th>Vigência</th><th>Valor mensal</th><th>Status</th><th>Ações</th></tr></thead><tbody id="rentalContractsTable"></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="cobrancas">
+        <div class="two-col form-layout">
+          <div class="card">
+            <div class="section-head compact"><div><h3>Cobranças mensais</h3><small>Crie manualmente ou gere as cobranças do mês a partir dos contratos ativos.</small></div></div>
+            <div class="banner">As cobranças aceitam pagamento parcial e o saldo é recalculado automaticamente conforme os recebimentos forem lançados.</div>
+            <div class="actions-inline stacked section-space-top">
+              <div class="actions-inline">
+                <input id="rentalGenerateCompetence" type="month" />
+                <button type="button" class="secondary" id="btnGenerateRentalCharges">Gerar cobranças do mês</button>
+              </div>
+            </div>
+            <form id="rentalChargeForm" class="forms-grid section-space-top">
+              <input type="hidden" id="rentalChargeId" />
+              <div class="field"><label>Contrato</label><select id="rentalChargeContract" required></select></div>
+              <div class="field"><label>Competência</label><input id="rentalChargeCompetence" type="month" required /></div>
+              <div class="field"><label>Vencimento</label><input id="rentalChargeDueDate" type="date" required /></div>
+              <div class="field"><label>Aluguel base</label><input id="rentalChargeBaseRent" type="number" min="0" step="0.01" value="0" /></div>
+              <div class="field"><label>Condomínio</label><input id="rentalChargeCondoAmount" type="number" min="0" step="0.01" value="0" /></div>
+              <div class="field"><label>IPTU</label><input id="rentalChargeIptuAmount" type="number" min="0" step="0.01" value="0" /></div>
+              <div class="field"><label>Outros</label><input id="rentalChargeOtherAmount" type="number" min="0" step="0.01" value="0" /></div>
+              <div class="field"><label>Desconto</label><input id="rentalChargeDiscountAmount" type="number" min="0" step="0.01" value="0" /></div>
+              <div class="field"><label>Juros</label><input id="rentalChargeInterestAmount" type="number" min="0" step="0.01" value="0" /></div>
+              <div class="field"><label>Multa</label><input id="rentalChargePenaltyAmount" type="number" min="0" step="0.01" value="0" /></div>
+              <div class="field full"><label>Observações</label><textarea id="rentalChargeNotes" rows="3"></textarea></div>
+              <div class="actions-inline full">
+                <button type="submit">Salvar cobrança</button>
+                <button type="button" class="secondary" onclick="clearRentalChargeForm()">Cancelar edição</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <div class="section-head compact"><div><h3>Cobranças lançadas</h3><small id="rentalChargesCountLabel"></small></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Vencimento</th><th>Imóvel / Inquilino</th><th>Competência</th><th>Total</th><th>Recebido</th><th>Saldo</th><th>Status</th><th>Ações</th></tr></thead><tbody id="rentalChargesTable"></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="recebimentos">
+        <div class="two-col form-layout">
+          <div class="card">
+            <div class="section-head compact"><div><h3>Lançamento de recebimentos</h3><small>Registre pagamentos integrais ou parciais e vincule cada entrada à cobrança correta.</small></div></div>
+            <form id="rentalReceiptForm" class="forms-grid">
+              <input type="hidden" id="rentalReceiptId" />
+              <div class="field"><label>Cobrança</label><select id="rentalReceiptCharge" required></select></div>
+              <div class="field"><label>Data do recebimento</label><input id="rentalReceiptDate" type="date" required /></div>
+              <div class="field"><label>Valor recebido</label><input id="rentalReceiptAmount" type="number" min="0" step="0.01" required /></div>
+              <div class="field"><label>Forma recebimento</label><input id="rentalReceiptMethod" placeholder="PIX, TED, dinheiro..." /></div>
+              <div class="field"><label>Referência</label><input id="rentalReceiptReference" placeholder="Comprovante, NSU, ID da transação..." /></div>
+              <div class="field full"><label>Observações</label><textarea id="rentalReceiptNotes" rows="3"></textarea></div>
+              <div class="actions-inline full">
+                <button type="submit">Salvar recebimento</button>
+                <button type="button" class="secondary" onclick="clearRentalReceiptForm()">Cancelar edição</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <div class="section-head compact"><div><h3>Recebimentos lançados</h3><small id="rentalReceiptsCountLabel"></small></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Data</th><th>Imóvel / Inquilino</th><th>Competência</th><th>Valor</th><th>Forma</th><th>Ações</th></tr></thead><tbody id="rentalReceiptsTable"></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="administracao">
+        <div class="section-head">
+          <div>
+            <h3>Administração e segurança</h3>
+            <small>Cadastre usuários, altere login e senha, gere backup e restaure a base quando necessário.</small>
+          </div>
+        </div>
+
+        <div class="grid-cards admin-stats-grid" id="adminStats"></div>
+
+        <div class="card" id="adminAccessNotice">
+          <div class="section-head compact">
+            <div>
+              <h3>Meu acesso</h3>
+              <small id="profileSecurityHint">Atualize o seu login e mantenha a senha protegida.</small>
+            </div>
+            <div id="profileRoleBadge"></div>
+          </div>
+          <form id="profileForm" class="forms-grid">
+            <div class="field"><label>Nome</label><input id="profileName" required /></div>
+            <div class="field"><label>Login (e-mail)</label><input id="profileEmail" type="email" required /></div>
+            <div class="actions-inline full">
+              <button type="submit">Salvar meus dados</button>
+            </div>
+          </form>
+
+          <div class="section-head compact section-space-top">
+            <div>
+              <h3>Trocar senha</h3>
+              <small>Use sua senha atual para definir uma nova senha segura.</small>
+            </div>
+          </div>
+          <form id="passwordForm" class="forms-grid">
+            <div class="field"><label>Senha atual</label><input id="profileCurrentPassword" type="password" required /></div>
+            <div class="field"><label>Nova senha</label><input id="profileNewPassword" type="password" required /></div>
+            <div class="field"><label>Confirmar nova senha</label><input id="profileConfirmPassword" type="password" required /></div>
+            <div class="field full helper-text">A nova senha deve ter pelo menos 8 caracteres.</div>
+            <div class="actions-inline full">
+              <button type="submit">Atualizar senha</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="two-col form-layout admin-only" id="adminUsersRow">
+          <div class="card">
+            <div class="section-head compact">
+              <div>
+                <h3>Cadastro de usuários</h3>
+                <small>Crie novos acessos ou edite nome, login, perfil e status.</small>
+              </div>
+            </div>
+            <form id="userForm" class="forms-grid">
+              <input type="hidden" id="userId" />
+              <div class="field"><label>Nome</label><input id="userName" required /></div>
+              <div class="field"><label>Login (e-mail)</label><input id="userEmail" type="email" required /></div>
+              <div class="field"><label>Perfil</label><select id="userRole"><option value="admin">Administrador</option><option value="user">Usuário</option></select></div>
+              <div class="field">
+                <label>Status</label>
+                <select id="userActive">
+                  <option value="1">Ativo</option>
+                  <option value="0">Inativo</option>
+                </select>
+              </div>
+              <div class="field"><label id="userPasswordLabel">Senha inicial</label><input id="userPassword" type="password" /></div>
+              <div class="field"><label>Confirmar senha</label><input id="userPasswordConfirm" type="password" /></div>
+              <div class="field full helper-text">Ao editar um usuário, deixe a senha em branco se não quiser redefini-la.</div>
+              <div class="actions-inline full">
+                <button type="submit" id="userSubmitLabel">Salvar usuário</button>
+                <button type="button" class="secondary" onclick="clearUserForm()">Cancelar edição</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="card">
+            <div class="section-head compact">
+              <div><h3>Usuários cadastrados</h3><small id="usersCountLabel"></small></div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Usuário</th>
+                    <th>Perfil</th>
+                    <th>Status</th>
+                    <th>Criado em</th>
+                    <th>Ações</th>
+                  </tr>
+                </thead>
+                <tbody id="usersTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card admin-only" id="backupCard">
+          <div class="section-head compact">
+            <div>
+              <h3>Backup e restauração</h3>
+              <small>Baixe um backup completo da base atual ou restaure um backup já gerado.</small>
+            </div>
+          </div>
+          <div class="banner">
+            A restauração substitui os dados atuais do sistema. Faça um backup novo antes de restaurar outro arquivo.
+          </div>
+          <div class="summary-box muted" id="restoreChecklist">
+            <strong>Checklist rápido antes de restaurar</strong><br>
+            1. Gere um backup novo da base atual.<br>
+            2. Confirme que o arquivo pertence a este ambiente.<br>
+            3. Use a confirmação reforçada para evitar sobrescrita acidental.
+          </div>
+          <div class="actions-inline stacked">
+            <button type="button" id="btnDownloadBackup">Baixar backup completo (.zip)</button>
+            <form id="restoreBackupForm" class="upload-form">
+              <input type="file" id="restoreBackupFile" accept=".zip,.db" />
+              <button type="submit" class="secondary">Restaurar backup</button>
+            </form>
+          </div>
+          <div id="backupStatus" class="summary-box muted">Nenhum backup restaurado nesta sessão.</div>
+        </div>
+      </section>
+
+      <section class="page" id="relatorios">
+        <div class="section-head">
+          <div>
+            <h3>Relatório mensal</h3>
+            <small>Selecione o mês, aplique filtros e exporte o resultado para Excel.</small>
+          </div>
+          <div class="actions-inline">
+            <input id="reportMonth" type="month" />
+            <select id="reportMode">
+              <option value="dynamic">Relatório dinâmico</option>
+              <option value="frozen">Relatório fechado/congelado</option>
+            </select>
+            <button class="secondary" id="btnLoadReport">Atualizar relatório</button>
+            <button id="btnExportReport">Exportar Excel</button>
+            <button type="button" class="admin-only" id="btnFreezeReport">Fechar competência</button>
+            <button type="button" class="secondary admin-only hidden" id="btnReopenReport">Reabrir competência</button>
+          </div>
+        </div>
+        <div id="reportModeStatus" class="summary-box muted">Selecione uma competência para usar o relatório dinâmico ou consultar um fechamento congelado.</div>
+        <div class="card report-filters-card">
+          <div class="section-head compact">
+            <div>
+              <h3>Filtros do relatório</h3>
+              <small>Refine por conta, aplicação e tipo de ativo.</small>
+            </div>
+          </div>
+          <div class="forms-grid report-filters-grid">
+            <div class="field"><label>Conta</label><select id="reportAccountFilter"></select></div>
+            <div class="field"><label>Aplicação</label><select id="reportApplicationFilter"></select></div>
+            <div class="field"><label>Tipo</label><select id="reportTypeFilter"></select></div>
+          </div>
+        </div>
+        <div class="grid-cards" id="reportCards"></div>
+        <div class="card report-summary-card">
+          <div class="section-head compact">
+            <div>
+              <h3>Resumo executivo</h3>
+              <small>Leitura rápida da competência selecionada.</small>
+            </div>
+          </div>
+          <div id="reportExecutiveSummary" class="summary-box muted">Selecione um mês para montar o resumo executivo.</div>
+        </div>
+        <div class="two-col">
+          <div class="card">
+            <div class="section-head compact"><div><h3>Patrimônio por tipo</h3><small>No mês selecionado.</small></div></div>
+            <div class="bar-list" id="reportTypeBars"></div>
+          </div>
+          <div class="card">
+            <div class="section-head compact"><div><h3>Patrimônio por conta</h3><small>No mês selecionado.</small></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Conta</th><th>Valor</th></tr></thead><tbody id="reportAccountsTable"></tbody></table></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="section-head compact">
+            <div>
+              <h3>Tabela mensal consolidada</h3>
+              <small>Saldo inicial, aporte, rendimento em R$, rendimento em %, saldo final e total acumulado por aplicação.</small>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Instituição</th>
+                  <th>Aplicação</th>
+                  <th>Saldo inicial</th>
+                  <th>Aporte</th>
+                  <th>Rendimento em R$</th>
+                  <th>Rendimento em %</th>
+                  <th>Saldo final</th>
+                  <th>Total acumulado</th>
+                </tr>
+              </thead>
+              <tbody id="reportMonthlyTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="confirm-overlay hidden" id="restoreConfirmOverlay">
+    <div class="confirm-card">
+      <div class="section-head compact">
+        <div>
+          <h3>Confirmação reforçada de restauração</h3>
+          <small>Essa operação substitui os dados atuais do sistema.</small>
+        </div>
+      </div>
+      <div class="summary-box">
+        Arquivo selecionado: <strong id="restoreConfirmFileName">-</strong><br>
+        Para continuar, digite <strong>RESTAURAR</strong> no campo abaixo.
+      </div>
+      <form id="restoreConfirmForm" class="forms-grid single-col section-space-top">
+        <div class="field">
+          <label>Palavra de confirmação</label>
+          <input id="restoreConfirmText" autocomplete="off" />
+        </div>
+        <div class="actions-inline">
+          <button type="submit">Confirmar restauração</button>
+          <button type="button" class="secondary" id="btnCancelRestoreConfirm">Cancelar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="login-overlay" id="loginOverlay">
+    <div class="login-card">
+      <div class="brand brand-center">
+        <div class="brand-logo">IC</div>
+        <div>
+          <h1>Entrar no InvestControl</h1>
+          <small>Entre com seu login e depois altere seus dados em Administração.</small>
+        </div>
+      </div>
+      <form id="loginForm" class="forms-grid single-col">
+        <div class="field"><label>E-mail</label><input id="loginEmail" type="email" placeholder="{{ default_email }}" required /></div>
+        <div class="field"><label>Senha</label><input id="loginPassword" type="password" placeholder="Sua senha" required /></div>
+        <button type="submit">Entrar</button>
+      </form>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='rentals.js') }}"></script>
+</body>
+</html>
