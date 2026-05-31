@@ -659,7 +659,7 @@ def summarize_monthly_rows(month: str, rows: list[dict[str, Any]], filters: dict
     total_rendimento_percentual = round((total_rendimentos / total_saldo_inicial * 100), 4) if total_saldo_inicial > 0 else 0.0
 
     type_totals: dict[str, float] = {}
-    account_totals: dict[str, float] = {}
+    account_totals: dict[int, float] = {}
     account_labels: dict[int, str] = {}
     for row in monthly_rows:
         value = round(float(row.get("saldoFinal") or 0), 2)
@@ -667,7 +667,7 @@ def summarize_monthly_rows(month: str, rows: list[dict[str, Any]], filters: dict
         account_name = clean_text(row.get("account_name"))
         account_id = int(row.get("account_id") or 0)
         type_totals[app_type] = type_totals.get(app_type, 0.0) + value
-        account_totals[account_name] = account_totals.get(account_name, 0.0) + value
+        account_totals[account_id] = account_totals.get(account_id, 0.0) + value
         if account_id:
             account_labels[account_id] = account_name
 
@@ -685,29 +685,9 @@ def summarize_monthly_rows(month: str, rows: list[dict[str, Any]], filters: dict
             "value": round(value, 2),
             "percent": round(value / grand_total * 100, 2),
         }
-        for account_id, value in sorted(
-            ((key, val) for key, val in {int(row.get("account_id") or 0): 0.0 for row in monthly_rows}.items()),
-            key=lambda item: item[1],
-            reverse=True,
-        )
+        for account_id, value in sorted(account_totals.items(), key=lambda item: item[1], reverse=True)
+        if value > 0
     ]
-    if not portfolio_account:
-        account_grouped: dict[int, float] = {}
-        for row in monthly_rows:
-            account_id = int(row.get("account_id") or 0)
-            account_grouped[account_id] = account_grouped.get(account_id, 0.0) + float(row.get("saldoFinal") or 0)
-            if account_id:
-                account_labels[account_id] = clean_text(row.get("account_name"))
-        portfolio_account = [
-            {
-                "account_id": key,
-                "account_name": account_labels.get(key, "Conta"),
-                "value": round(value, 2),
-                "percent": round(value / grand_total * 100, 2),
-            }
-            for key, value in sorted(account_grouped.items(), key=lambda item: item[1], reverse=True)
-            if value > 0
-        ]
 
     closure_meta = closure or {}
     return {
