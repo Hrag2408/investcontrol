@@ -135,6 +135,95 @@ def init_db() -> None:
                 imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 summary_json TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS report_closures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ref_month TEXT NOT NULL UNIQUE,
+                report_payload_json TEXT NOT NULL,
+                closed_by_user_id INTEGER,
+                closed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (closed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS rental_properties (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                code TEXT DEFAULT '',
+                category TEXT DEFAULT 'Residencial',
+                address TEXT DEFAULT '',
+                district TEXT DEFAULT '',
+                city TEXT DEFAULT '',
+                state TEXT DEFAULT '',
+                zip_code TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS rental_tenants (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                document TEXT DEFAULT '',
+                email TEXT DEFAULT '',
+                phone TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS rental_contracts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                property_id INTEGER NOT NULL,
+                tenant_id INTEGER NOT NULL,
+                contract_code TEXT DEFAULT '',
+                start_date TEXT NOT NULL,
+                end_date TEXT DEFAULT '',
+                due_day INTEGER NOT NULL DEFAULT 5,
+                rent_amount REAL NOT NULL DEFAULT 0,
+                condo_amount REAL NOT NULL DEFAULT 0,
+                iptu_amount REAL NOT NULL DEFAULT 0,
+                other_amount REAL NOT NULL DEFAULT 0,
+                adjustment_index TEXT DEFAULT '',
+                payment_method TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'ativo',
+                notes TEXT DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (property_id) REFERENCES rental_properties(id) ON DELETE CASCADE,
+                FOREIGN KEY (tenant_id) REFERENCES rental_tenants(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS rental_charges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                contract_id INTEGER NOT NULL,
+                competence TEXT NOT NULL,
+                due_date TEXT NOT NULL,
+                base_rent REAL NOT NULL DEFAULT 0,
+                condo_amount REAL NOT NULL DEFAULT 0,
+                iptu_amount REAL NOT NULL DEFAULT 0,
+                other_amount REAL NOT NULL DEFAULT 0,
+                discount_amount REAL NOT NULL DEFAULT 0,
+                interest_amount REAL NOT NULL DEFAULT 0,
+                penalty_amount REAL NOT NULL DEFAULT 0,
+                total_amount REAL NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'aberto',
+                notes TEXT DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (contract_id, competence),
+                FOREIGN KEY (contract_id) REFERENCES rental_contracts(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS rental_receipts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                charge_id INTEGER NOT NULL,
+                receipt_date TEXT NOT NULL,
+                amount REAL NOT NULL DEFAULT 0,
+                payment_method TEXT DEFAULT '',
+                reference TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (charge_id) REFERENCES rental_charges(id) ON DELETE CASCADE
+            );
             """
         )
         earning_columns = {row["name"] for row in conn.execute("PRAGMA table_info(earnings)").fetchall()}
@@ -251,6 +340,35 @@ def list_users(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         "SELECT id, email, name, role, active, created_at FROM users ORDER BY active DESC, role DESC, name ASC, id ASC"
     ).fetchall()
     return [serialize_user_row(row) for row in rows]
+
+
+def serialize_report_closure_row(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any]:
+    if not row:
+        return {}
+    data = dict(row)
+    return {
+        "id": int(data.get("id") or 0),
+        "month": clean_text(data.get("ref_month")),
+        "month_label": month_label(clean_text(data.get("ref_month"))) if clean_text(data.get("ref_month")) else "",
+        "closed_at": clean_text(data.get("closed_at")),
+        "updated_at": clean_text(data.get("updated_at")),
+        "closed_by_user_id": int(data.get("closed_by_user_id") or 0) if data.get("closed_by_user_id") else None,
+        "closed_by_name": clean_text(data.get("closed_by_name")) or "Sistema",
+        "is_closed": bool(clean_text(data.get("ref_month"))),
+    }
+
+
+def list_report_closures(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT rc.id, rc.ref_month, rc.closed_at, rc.updated_at, rc.closed_by_user_id,
+               COALESCE(u.name, 'Sistema') AS closed_by_name
+        FROM report_closures rc
+        LEFT JOIN users u ON u.id = rc.closed_by_user_id
+        ORDER BY rc.ref_month DESC
+        """
+    ).fetchall()
+    return [serialize_report_closure_row(row) for row in rows]
 
 
 def parse_json() -> dict[str, Any]:
@@ -426,8 +544,204 @@ def filtered_applications(conn: sqlite3.Connection, filters: dict[str, Any] | No
     return rows
 
 
+def previous_month_key(month: str) -> str:
+    year, month_num = [int(part) for part in month.split('-')]
+    if month_num == 1:
+        return f"{year - 1:04d}-12"
+    return f"{year:04d}-{month_num - 1:02d}"
+
+
+def parse_report_mode(value: Any) -> str:
+    mode = clean_text(value).lower()
+    if mode in {"frozen", "fechado", "fechado/congelado", "closed"}:
+        return "frozen"
+    return "dynamic"
+
+
+def get_report_closure_row(conn: sqlite3.Connection, month: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT rc.id, rc.ref_month, rc.report_payload_json, rc.closed_at, rc.updated_at, rc.closed_by_user_id,
+               COALESCE(u.name, 'Sistema') AS closed_by_name
+        FROM report_closures rc
+        LEFT JOIN users u ON u.id = rc.closed_by_user_id
+        WHERE rc.ref_month = ?
+        LIMIT 1
+        """,
+        (month,),
+    ).fetchone()
+
+
+def parse_report_closure_payload(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any]:
+    if not row:
+        return {}
+    raw = clean_text(dict(row).get("report_payload_json"))
+    try:
+        payload = json.loads(raw) if raw else {}
+    except Exception:
+        payload = {}
+    payload["closure"] = serialize_report_closure_row(row)
+    payload["monthly_rows"] = payload.get("monthly_rows") if isinstance(payload.get("monthly_rows"), list) else []
+    payload["month"] = clean_text(payload.get("month")) or clean_text(dict(row).get("ref_month"))
+    payload["month_label"] = clean_text(payload.get("month_label")) or month_label(payload["month"])
+    return payload
+
+
+def latest_closure_anchor_for_application(conn: sqlite3.Connection, app_id: int, until_month: str | None) -> dict[str, Any] | None:
+    if not until_month:
+        return None
+    rows = conn.execute(
+        """
+        SELECT rc.id, rc.ref_month, rc.report_payload_json, rc.closed_at, rc.updated_at, rc.closed_by_user_id,
+               COALESCE(u.name, 'Sistema') AS closed_by_name
+        FROM report_closures rc
+        LEFT JOIN users u ON u.id = rc.closed_by_user_id
+        WHERE rc.ref_month <= ?
+        ORDER BY rc.ref_month DESC
+        """,
+        (until_month,),
+    ).fetchall()
+    for row in rows:
+        payload = parse_report_closure_payload(row)
+        for item in payload.get("monthly_rows", []):
+            if int(item.get("application_id") or 0) == app_id:
+                return {
+                    "month": clean_text(dict(row).get("ref_month")),
+                    "row": item,
+                    "closure": payload.get("closure", {}),
+                }
+    return None
+
+
+def opening_balance_from_official_anchor(conn: sqlite3.Connection, app_id: int, previous_month: str) -> float:
+    anchor = latest_closure_anchor_for_application(conn, app_id, previous_month)
+    if anchor:
+        base_balance = float(anchor["row"].get("saldoFinal") or 0)
+        adjustments = application_adjustments_total(conn, app_id, until_month=previous_month, start_after_month=anchor["month"])
+        return round(base_balance + adjustments, 2)
+    return round(application_market_value(conn, app_id, previous_month), 2)
+
+
+def accumulated_income_from_official_anchor(conn: sqlite3.Connection, app_id: int, previous_month: str) -> float:
+    anchor = latest_closure_anchor_for_application(conn, app_id, previous_month)
+    if anchor:
+        base_total = float(anchor["row"].get("totalAcumulado") or 0)
+        extra = application_income_total(conn, app_id, until_month=previous_month, start_after_month=anchor["month"])
+        return round(base_total + extra, 2)
+    return round(application_income_total(conn, app_id, until_month=previous_month), 2)
+
+
+def apply_report_filters(rows: list[dict[str, Any]], filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    parsed = normalize_report_filters(filters)
+    filtered: list[dict[str, Any]] = []
+    for item in rows:
+        if parsed["account_id"] and int(item.get("account_id") or 0) != parsed["account_id"]:
+            continue
+        if parsed["application_id"] and int(item.get("application_id") or 0) != parsed["application_id"]:
+            continue
+        if parsed["app_type"] and clean_text(item.get("application_type")) != parsed["app_type"]:
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def summarize_monthly_rows(month: str, rows: list[dict[str, Any]], filters: dict[str, Any] | None = None, report_mode: str = "dynamic", closure: dict[str, Any] | None = None) -> dict[str, Any]:
+    parsed_filters = normalize_report_filters(filters)
+    monthly_rows = apply_report_filters(rows, parsed_filters)
+    total_aportes = round(sum(float(item.get("aportesBrutos") or 0) for item in monthly_rows), 2)
+    total_resgates = round(sum(float(item.get("resgates") or 0) for item in monthly_rows), 2)
+    total_dividendos = round(sum(float(item.get("dividendos") or 0) for item in monthly_rows), 2)
+    total_rendimentos_puros = round(sum(float(item.get("rendimentos") or 0) for item in monthly_rows), 2)
+    total_rendimentos = round(sum(float(item.get("rendimentoReais") or 0) for item in monthly_rows), 2)
+    total_saldo_inicial = round(sum(float(item.get("saldoInicial") or 0) for item in monthly_rows), 2)
+    total_saldo_final = round(sum(float(item.get("saldoFinal") or 0) for item in monthly_rows), 2)
+    total_acumulado = round(sum(float(item.get("totalAcumulado") or 0) for item in monthly_rows), 2)
+    total_rendimento_percentual = round((total_rendimentos / total_saldo_inicial * 100), 4) if total_saldo_inicial > 0 else 0.0
+
+    type_totals: dict[str, float] = {}
+    account_totals: dict[str, float] = {}
+    account_labels: dict[int, str] = {}
+    for row in monthly_rows:
+        value = round(float(row.get("saldoFinal") or 0), 2)
+        app_type = clean_text(row.get("application_type"))
+        account_name = clean_text(row.get("account_name"))
+        account_id = int(row.get("account_id") or 0)
+        type_totals[app_type] = type_totals.get(app_type, 0.0) + value
+        account_totals[account_name] = account_totals.get(account_name, 0.0) + value
+        if account_id:
+            account_labels[account_id] = account_name
+
+    patrimonio = round(total_saldo_final, 2)
+    grand_total = patrimonio or 1.0
+    portfolio_type = [
+        {"type": key, "value": round(value, 2), "percent": round(value / grand_total * 100, 2)}
+        for key, value in sorted(type_totals.items(), key=lambda item: item[1], reverse=True)
+        if value > 0
+    ]
+    portfolio_account = [
+        {
+            "account_id": account_id,
+            "account_name": account_labels.get(account_id, "Conta"),
+            "value": round(value, 2),
+            "percent": round(value / grand_total * 100, 2),
+        }
+        for account_id, value in sorted(
+            ((key, val) for key, val in {int(row.get("account_id") or 0): 0.0 for row in monthly_rows}.items()),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+    ]
+    if not portfolio_account:
+        account_grouped: dict[int, float] = {}
+        for row in monthly_rows:
+            account_id = int(row.get("account_id") or 0)
+            account_grouped[account_id] = account_grouped.get(account_id, 0.0) + float(row.get("saldoFinal") or 0)
+            if account_id:
+                account_labels[account_id] = clean_text(row.get("account_name"))
+        portfolio_account = [
+            {
+                "account_id": key,
+                "account_name": account_labels.get(key, "Conta"),
+                "value": round(value, 2),
+                "percent": round(value / grand_total * 100, 2),
+            }
+            for key, value in sorted(account_grouped.items(), key=lambda item: item[1], reverse=True)
+            if value > 0
+        ]
+
+    closure_meta = closure or {}
+    return {
+        "month": month,
+        "month_label": month_label(month),
+        "filters": parsed_filters,
+        "mode": report_mode,
+        "requested_mode": report_mode,
+        "closure": {
+            **closure_meta,
+            "is_closed": bool(closure_meta.get("month")),
+        } if closure_meta else {"is_closed": False},
+        "totals": {
+            "aportes": total_aportes,
+            "resgates": total_resgates,
+            "dividendos": total_dividendos,
+            "rendimentos": total_rendimentos,
+            "rendimentos_puros": total_rendimentos_puros,
+            "patrimonio": patrimonio,
+            "resultado_caixa": round(total_rendimentos - total_resgates, 2),
+            "saldo_inicial": total_saldo_inicial,
+            "saldo_final": total_saldo_final,
+            "total_acumulado": total_acumulado,
+            "rendimento_percentual": total_rendimento_percentual,
+        },
+        "portfolio_by_type": portfolio_type,
+        "portfolio_by_account": portfolio_account,
+        "monthly_rows": monthly_rows,
+    }
+
+
 def build_monthly_report_rows(conn: sqlite3.Connection, month: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    previous_month = previous_month_key(month)
     for app in filtered_applications(conn, filters):
         app_id = int(app["id"])
         all_movements = conn.execute(
@@ -450,15 +764,10 @@ def build_monthly_report_rows(conn: sqlite3.Connection, month: str, filters: dic
         rendimentos = sum(float(item["amount"] or 0) for item in all_earnings if clean_text(item["competence"] or item["payment_date"])[:7] == month)
         rendimento_reais = round(dividendos + rendimentos, 2)
 
-        prev_aportes = sum(float(item["amount"] or 0) for item in all_movements if clean_text(item["kind"]) == "aporte" and clean_text(item["competence"] or item["date"])[:7] < month)
-        prev_resgates = sum(float(item["amount"] or 0) for item in all_movements if clean_text(item["kind"]) == "resgate" and clean_text(item["competence"] or item["date"])[:7] < month)
-        prev_dividendos = sum(float(item["net_amount"] or 0) for item in all_dividends if clean_text(item["competence"] or item["payment_date"])[:7] < month)
-        prev_rendimentos = sum(float(item["amount"] or 0) for item in all_earnings if clean_text(item["competence"] or item["payment_date"])[:7] < month)
-
-        saldo_inicial = round(float(app["initial_value"] or 0) + prev_aportes - prev_resgates + prev_dividendos + prev_rendimentos, 2)
+        saldo_inicial = opening_balance_from_official_anchor(conn, app_id, previous_month)
         saldo_final = round(saldo_inicial + aporte + rendimento_reais, 2)
         rendimento_percentual = round((rendimento_reais / saldo_inicial * 100), 4) if saldo_inicial > 0 else 0.0
-        total_acumulado = round(prev_dividendos + prev_rendimentos + rendimento_reais, 2)
+        total_acumulado = round(accumulated_income_from_official_anchor(conn, app_id, previous_month) + rendimento_reais, 2)
 
         rows.append(
             {
@@ -468,6 +777,10 @@ def build_monthly_report_rows(conn: sqlite3.Connection, month: str, filters: dic
                 "application_id": app_id,
                 "application_name": clean_text(app["name"]),
                 "application_type": clean_text(app["type"]),
+                "aportesBrutos": round(aportes, 2),
+                "resgates": round(resgates, 2),
+                "dividendos": round(dividendos, 2),
+                "rendimentos": round(rendimentos, 2),
                 "saldoInicial": saldo_inicial,
                 "aporte": aporte,
                 "rendimentoReais": rendimento_reais,
@@ -479,45 +792,120 @@ def build_monthly_report_rows(conn: sqlite3.Connection, month: str, filters: dic
     return rows
 
 
+def application_income_total(
+    conn: sqlite3.Connection,
+    app_id: int,
+    until_month: str | None = None,
+    start_after_month: str | None = None,
+) -> float:
+    params_div: list[Any] = [app_id]
+    params_earn: list[Any] = [app_id]
+    dividends_where = ["application_id = ?"]
+    earnings_where = ["application_id = ?"]
+
+    if start_after_month:
+        dividends_where.append("substr(COALESCE(competence, payment_date), 1, 7) > ?")
+        earnings_where.append("substr(COALESCE(competence, payment_date), 1, 7) > ?")
+        params_div.append(start_after_month)
+        params_earn.append(start_after_month)
+
+    if until_month:
+        dividends_where.append("substr(COALESCE(competence, payment_date), 1, 7) <= ?")
+        earnings_where.append("substr(COALESCE(competence, payment_date), 1, 7) <= ?")
+        params_div.append(until_month)
+        params_earn.append(until_month)
+
+    dividendos = conn.execute(
+        f"SELECT COALESCE(SUM(net_amount), 0) AS total FROM dividends WHERE {' AND '.join(dividends_where)}",
+        tuple(params_div),
+    ).fetchone()["total"]
+    rendimentos = conn.execute(
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM earnings WHERE {' AND '.join(earnings_where)}",
+        tuple(params_earn),
+    ).fetchone()["total"]
+    return round(float(dividendos or 0) + float(rendimentos or 0), 2)
+
+
+def application_adjustments_total(
+    conn: sqlite3.Connection,
+    app_id: int,
+    until_month: str | None = None,
+    start_after_month: str | None = None,
+) -> float:
+    params_mov: list[Any] = [app_id]
+    params_div: list[Any] = [app_id]
+    params_earn: list[Any] = [app_id]
+    movements_where = ["application_id = ?"]
+    dividends_where = ["application_id = ?"]
+    earnings_where = ["application_id = ?"]
+
+    if start_after_month:
+        movements_where.append("substr(COALESCE(competence, date), 1, 7) > ?")
+        dividends_where.append("substr(COALESCE(competence, payment_date), 1, 7) > ?")
+        earnings_where.append("substr(COALESCE(competence, payment_date), 1, 7) > ?")
+        params_mov.append(start_after_month)
+        params_div.append(start_after_month)
+        params_earn.append(start_after_month)
+
+    if until_month:
+        movements_where.append("substr(COALESCE(competence, date), 1, 7) <= ?")
+        dividends_where.append("substr(COALESCE(competence, payment_date), 1, 7) <= ?")
+        earnings_where.append("substr(COALESCE(competence, payment_date), 1, 7) <= ?")
+        params_mov.append(until_month)
+        params_div.append(until_month)
+        params_earn.append(until_month)
+
+    aporte = conn.execute(
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM movements WHERE {' AND '.join(movements_where)} AND kind = 'aporte'",
+        tuple(params_mov),
+    ).fetchone()["total"]
+    resgate = conn.execute(
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM movements WHERE {' AND '.join(movements_where)} AND kind = 'resgate'",
+        tuple(params_mov),
+    ).fetchone()["total"]
+    dividendos = conn.execute(
+        f"SELECT COALESCE(SUM(net_amount), 0) AS total FROM dividends WHERE {' AND '.join(dividends_where)}",
+        tuple(params_div),
+    ).fetchone()["total"]
+    rendimentos = conn.execute(
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM earnings WHERE {' AND '.join(earnings_where)}",
+        tuple(params_earn),
+    ).fetchone()["total"]
+
+    return round(float(aporte or 0) - float(resgate or 0) + float(dividendos or 0) + float(rendimentos or 0), 2)
+
+
+
 def base_value_for_application(conn: sqlite3.Connection, app_id: int, until_month: str | None = None) -> float:
     app_row = conn.execute("SELECT initial_value FROM applications WHERE id = ?", (app_id,)).fetchone()
     if not app_row:
         return 0.0
     total = float(app_row["initial_value"] or 0)
-    if until_month:
-        aporte = conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) AS total FROM movements WHERE application_id = ? AND kind = 'aporte' AND substr(COALESCE(competence, date), 1, 7) <= ?",
-            (app_id, until_month),
-        ).fetchone()["total"]
-        resgate = conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) AS total FROM movements WHERE application_id = ? AND kind = 'resgate' AND substr(COALESCE(competence, date), 1, 7) <= ?",
-            (app_id, until_month),
-        ).fetchone()["total"]
-    else:
-        aporte = conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) AS total FROM movements WHERE application_id = ? AND kind = 'aporte'",
-            (app_id,),
-        ).fetchone()["total"]
-        resgate = conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) AS total FROM movements WHERE application_id = ? AND kind = 'resgate'",
-            (app_id,),
-        ).fetchone()["total"]
-    return round(total + float(aporte or 0) - float(resgate or 0), 2)
+    total += application_adjustments_total(conn, app_id, until_month=until_month)
+    return round(total, 2)
+
 
 
 def application_market_value(conn: sqlite3.Connection, app_id: int, until_month: str | None = None) -> float:
     if until_month:
         snap = conn.execute(
-            "SELECT balance FROM snapshots WHERE application_id = ? AND ref_month <= ? ORDER BY ref_month DESC, id DESC LIMIT 1",
+            "SELECT balance, ref_month FROM snapshots WHERE application_id = ? AND ref_month <= ? ORDER BY ref_month DESC, id DESC LIMIT 1",
             (app_id, until_month),
         ).fetchone()
     else:
         snap = conn.execute(
-            "SELECT balance FROM snapshots WHERE application_id = ? ORDER BY ref_month DESC, id DESC LIMIT 1",
+            "SELECT balance, ref_month FROM snapshots WHERE application_id = ? ORDER BY ref_month DESC, id DESC LIMIT 1",
             (app_id,),
         ).fetchone()
     if snap:
-        return round(float(snap["balance"] or 0), 2)
+        total = float(snap["balance"] or 0)
+        total += application_adjustments_total(
+            conn,
+            app_id,
+            until_month=until_month,
+            start_after_month=clean_text(snap["ref_month"]),
+        )
+        return round(total, 2)
     return base_value_for_application(conn, app_id, until_month)
 
 
@@ -538,6 +926,70 @@ def portfolio_by_type(conn: sqlite3.Connection, until_month: str | None = None) 
         if value > 0
     ]
     return result
+
+
+def month_bounds(month: str) -> tuple[date, date]:
+    first_day = datetime.strptime(f"{month}-01", "%Y-%m-%d").date()
+    last_day = first_day.replace(day=calendar.monthrange(first_day.year, first_day.month)[1])
+    return first_day, last_day
+
+
+
+def rental_charge_paid_total(conn: sqlite3.Connection, charge_id: int) -> float:
+    row = conn.execute(
+        "SELECT COALESCE(SUM(amount), 0) AS total FROM rental_receipts WHERE charge_id = ?",
+        (charge_id,),
+    ).fetchone()
+    return round(float(row["total"] or 0), 2)
+
+
+
+def compute_rental_charge_status(base_status: str, due_date: str, total_amount: float, amount_paid: float) -> str:
+    status = clean_text(base_status).lower() or "aberto"
+    if status == "cancelado":
+        return "cancelado"
+    total_amount = round(float(total_amount or 0), 2)
+    amount_paid = round(float(amount_paid or 0), 2)
+    if total_amount <= 0:
+        return "cancelado"
+    if amount_paid >= total_amount:
+        return "pago"
+    if amount_paid > 0:
+        return "parcial"
+    try:
+        if due_date and datetime.strptime(due_date[:10], "%Y-%m-%d").date() < date.today():
+            return "vencido"
+    except Exception:
+        pass
+    return "aberto"
+
+
+
+def recalc_rental_charge_total(data: dict[str, Any]) -> float:
+    total = (
+        float(to_float(data.get("base_rent"), 0) or 0)
+        + float(to_float(data.get("condo_amount"), 0) or 0)
+        + float(to_float(data.get("iptu_amount"), 0) or 0)
+        + float(to_float(data.get("other_amount"), 0) or 0)
+        + float(to_float(data.get("interest_amount"), 0) or 0)
+        + float(to_float(data.get("penalty_amount"), 0) or 0)
+        - float(to_float(data.get("discount_amount"), 0) or 0)
+    )
+    return round(max(total, 0.0), 2)
+
+
+
+def refresh_rental_charge_status(conn: sqlite3.Connection, charge_id: int) -> None:
+    charge = conn.execute(
+        "SELECT id, due_date, total_amount, status FROM rental_charges WHERE id = ?",
+        (charge_id,),
+    ).fetchone()
+    if not charge:
+        return
+    paid_total = rental_charge_paid_total(conn, charge_id)
+    status = compute_rental_charge_status(charge["status"], clean_text(charge["due_date"]), float(charge["total_amount"] or 0), paid_total)
+    conn.execute("UPDATE rental_charges SET status = ? WHERE id = ?", (status, charge_id))
+
 
 
 def serialize_table(conn: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
@@ -584,9 +1036,74 @@ def serialize_table(conn: sqlite3.Connection, table: str) -> list[dict[str, Any]
             ORDER BY s.ref_month DESC, s.id DESC
         """,
         "imports": "SELECT * FROM import_logs ORDER BY imported_at DESC, id DESC",
+        "rental_properties": "SELECT * FROM rental_properties ORDER BY active DESC, name ASC, id DESC",
+        "rental_tenants": "SELECT * FROM rental_tenants ORDER BY active DESC, name ASC, id DESC",
+        "rental_contracts": """
+            SELECT c.*, p.name AS property_name, t.name AS tenant_name
+            FROM rental_contracts c
+            JOIN rental_properties p ON p.id = c.property_id
+            JOIN rental_tenants t ON t.id = c.tenant_id
+            ORDER BY c.status = 'ativo' DESC, c.start_date DESC, c.id DESC
+        """,
+        "rental_charges": """
+            SELECT ch.*, c.contract_code, c.property_id, c.tenant_id,
+                   p.name AS property_name, t.name AS tenant_name,
+                   COALESCE((SELECT SUM(r.amount) FROM rental_receipts r WHERE r.charge_id = ch.id), 0) AS amount_paid
+            FROM rental_charges ch
+            JOIN rental_contracts c ON c.id = ch.contract_id
+            JOIN rental_properties p ON p.id = c.property_id
+            JOIN rental_tenants t ON t.id = c.tenant_id
+            ORDER BY ch.due_date DESC, ch.id DESC
+        """,
+        "rental_receipts": """
+            SELECT r.*, ch.competence, ch.total_amount, c.contract_code,
+                   p.name AS property_name, t.name AS tenant_name
+            FROM rental_receipts r
+            JOIN rental_charges ch ON ch.id = r.charge_id
+            JOIN rental_contracts c ON c.id = ch.contract_id
+            JOIN rental_properties p ON p.id = c.property_id
+            JOIN rental_tenants t ON t.id = c.tenant_id
+            ORDER BY r.receipt_date DESC, r.id DESC
+        """,
     }
-    rows = conn.execute(queries[table]).fetchall()
-    return [dict(row) for row in rows]
+    rows = [dict(row) for row in conn.execute(queries[table]).fetchall()]
+    if table == "rental_charges":
+        for row in rows:
+            paid = round(float(row.get("amount_paid") or 0), 2)
+            total = round(float(row.get("total_amount") or 0), 2)
+            status = compute_rental_charge_status(row.get("status"), clean_text(row.get("due_date")), total, paid)
+            row["status"] = status
+            row["amount_paid"] = paid
+            row["balance_due"] = round(max(total - paid, 0.0), 2)
+    return rows
+
+
+def rental_dashboard_payload(conn: sqlite3.Connection, month: str) -> dict[str, Any]:
+    properties_total = int(conn.execute("SELECT COUNT(*) AS total FROM rental_properties WHERE active = 1").fetchone()["total"] or 0)
+    contracts_active = int(conn.execute("SELECT COUNT(*) AS total FROM rental_contracts WHERE status = 'ativo'").fetchone()["total"] or 0)
+    charges = serialize_table(conn, "rental_charges")
+    receipts = serialize_table(conn, "rental_receipts")
+    charges_open = sum(1 for item in charges if item.get("status") in {"aberto", "parcial", "vencido"})
+    charges_overdue = sum(1 for item in charges if item.get("status") == "vencido")
+    due_this_month = round(sum(float(item.get("total_amount") or 0) for item in charges if clean_text(item.get("competence"))[:7] == month), 2)
+    received_this_month = round(sum(float(item.get("amount") or 0) for item in receipts if clean_text(item.get("receipt_date"))[:7] == month), 2)
+    recent_receipts = receipts[:5]
+    upcoming = sorted(
+        [item for item in charges if item.get("status") in {"aberto", "parcial", "vencido"}],
+        key=lambda item: (clean_text(item.get("due_date")) or '9999-12-31', -int(item.get("id") or 0))
+    )[:8]
+    return {
+        "kpis": {
+            "properties": properties_total,
+            "contracts_active": contracts_active,
+            "charges_open": charges_open,
+            "charges_overdue": charges_overdue,
+            "due_this_month": due_this_month,
+            "received_this_month": received_this_month,
+        },
+        "upcoming_charges": upcoming,
+        "recent_receipts": recent_receipts,
+    }
 
 
 def dashboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -634,59 +1151,21 @@ def dashboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
-def monthly_report(conn: sqlite3.Connection, month: str, filters: dict[str, Any] | None = None) -> dict[str, Any]:
-    parsed_filters = normalize_report_filters(filters)
-    monthly_rows = build_monthly_report_rows(conn, month, parsed_filters)
-    total_aportes = round(sum(float(item.get("aporte") or 0) for item in monthly_rows if float(item.get("aporte") or 0) > 0), 2)
-    total_resgates = round(sum(abs(float(item.get("aporte") or 0)) for item in monthly_rows if float(item.get("aporte") or 0) < 0), 2)
-    total_rendimentos = round(sum(float(item.get("rendimentoReais") or 0) for item in monthly_rows), 2)
-    total_saldo_inicial = round(sum(float(item.get("saldoInicial") or 0) for item in monthly_rows), 2)
-    total_saldo_final = round(sum(float(item.get("saldoFinal") or 0) for item in monthly_rows), 2)
-    total_acumulado = round(sum(float(item.get("totalAcumulado") or 0) for item in monthly_rows), 2)
-    total_rendimento_percentual = round((total_rendimentos / total_saldo_inicial * 100), 4) if total_saldo_inicial > 0 else 0.0
+def monthly_report(conn: sqlite3.Connection, month: str, filters: dict[str, Any] | None = None, report_mode: str = "dynamic") -> dict[str, Any]:
+    parsed_mode = parse_report_mode(report_mode)
+    closure_row = get_report_closure_row(conn, month)
+    closure_payload = parse_report_closure_payload(closure_row) if closure_row else {}
 
-    filtered_apps = filtered_applications(conn, parsed_filters)
-    type_totals: dict[str, float] = {}
-    account_totals: dict[str, float] = {}
-    for app in filtered_apps:
-        value = application_market_value(conn, int(app["id"]), month)
-        app_type = clean_text(app["type"])
-        account_name = clean_text(app["account_name"])
-        type_totals[app_type] = type_totals.get(app_type, 0.0) + value
-        account_totals[account_name] = account_totals.get(account_name, 0.0) + value
-    patrimonio = round(sum(type_totals.values()), 2)
-    grand_total = patrimonio or 1.0
-    portfolio_type = [
-        {"type": key, "value": round(value, 2), "percent": round(value / grand_total * 100, 2)}
-        for key, value in sorted(type_totals.items(), key=lambda item: item[1], reverse=True)
-        if value > 0
-    ]
-    portfolio_account = [
-        {"account_name": key, "value": round(value, 2)}
-        for key, value in sorted(account_totals.items(), key=lambda item: item[1], reverse=True)
-        if value > 0
-    ]
+    if parsed_mode == "frozen":
+        if not closure_row:
+            raise ValueError("A competência selecionada ainda não possui fechamento oficial.")
+        base_rows = closure_payload.get("monthly_rows", [])
+        return summarize_monthly_rows(month, base_rows, filters, report_mode="frozen", closure=closure_payload.get("closure", {}))
 
-    return {
-        "month": month,
-        "month_label": month_label(month),
-        "filters": parsed_filters,
-        "totals": {
-            "aportes": total_aportes,
-            "resgates": total_resgates,
-            "dividendos": 0.0,
-            "rendimentos": total_rendimentos,
-            "patrimonio": patrimonio,
-            "resultado_caixa": round(total_rendimentos - total_resgates, 2),
-            "saldo_inicial": total_saldo_inicial,
-            "saldo_final": total_saldo_final,
-            "total_acumulado": total_acumulado,
-            "rendimento_percentual": total_rendimento_percentual,
-        },
-        "portfolio_by_type": portfolio_type,
-        "portfolio_by_account": portfolio_account,
-        "monthly_rows": monthly_rows,
-    }
+    base_rows = build_monthly_report_rows(conn, month)
+    report = summarize_monthly_rows(month, base_rows, filters, report_mode="dynamic", closure=closure_payload.get("closure", {}))
+    report["requested_mode"] = parsed_mode
+    return report
 
 
 def ensure_account(conn: sqlite3.Connection, name: str, institution: str) -> tuple[int, bool]:
@@ -883,6 +1362,13 @@ def api_bootstrap():
             "earnings": serialize_table(conn, "earnings"),
             "snapshots": serialize_table(conn, "snapshots"),
             "imports": serialize_table(conn, "imports"),
+            "rental_dashboard": rental_dashboard_payload(conn, month),
+            "rental_properties": serialize_table(conn, "rental_properties"),
+            "rental_tenants": serialize_table(conn, "rental_tenants"),
+            "rental_contracts": serialize_table(conn, "rental_contracts"),
+            "rental_charges": serialize_table(conn, "rental_charges"),
+            "rental_receipts": serialize_table(conn, "rental_receipts"),
+            "report_closures": list_report_closures(conn),
             "report": monthly_report(conn, month),
         }
     return jsonify(payload)
@@ -1385,6 +1871,450 @@ def delete_earning(item_id: int):
     return jsonify({"ok": True, "message": "Rendimento excluído."})
 
 
+def generate_rental_charges_for_month(conn: sqlite3.Connection, competence: str) -> dict[str, Any]:
+    competence = parse_month(competence)
+    first_day, last_day = month_bounds(competence)
+    contracts = conn.execute(
+        """
+        SELECT *
+        FROM rental_contracts
+        WHERE status = 'ativo'
+          AND date(start_date) <= date(?)
+          AND (COALESCE(NULLIF(end_date, ''), '9999-12-31') = '9999-12-31' OR date(end_date) >= date(?))
+        ORDER BY id DESC
+        """,
+        (last_day.isoformat(), first_day.isoformat()),
+    ).fetchall()
+    created = 0
+    skipped = 0
+    for contract in contracts:
+        due_day = min(max(int(contract["due_day"] or 5), 1), calendar.monthrange(first_day.year, first_day.month)[1])
+        due_date = first_day.replace(day=due_day).isoformat()
+        payload = {
+            "base_rent": float(contract["rent_amount"] or 0),
+            "condo_amount": float(contract["condo_amount"] or 0),
+            "iptu_amount": float(contract["iptu_amount"] or 0),
+            "other_amount": float(contract["other_amount"] or 0),
+            "discount_amount": 0,
+            "interest_amount": 0,
+            "penalty_amount": 0,
+        }
+        total_amount = recalc_rental_charge_total(payload)
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO rental_charges (
+                contract_id, competence, due_date, base_rent, condo_amount, iptu_amount, other_amount,
+                discount_amount, interest_amount, penalty_amount, total_amount, status, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'aberto', ?)
+            """,
+            (
+                int(contract["id"]), competence, due_date,
+                payload["base_rent"], payload["condo_amount"], payload["iptu_amount"], payload["other_amount"],
+                payload["discount_amount"], payload["interest_amount"], payload["penalty_amount"], total_amount,
+                f"Cobrança gerada automaticamente para a competência {competence}.",
+            ),
+        )
+        if cur.rowcount:
+            created += 1
+        else:
+            skipped += 1
+    return {"competence": competence, "created": created, "skipped": skipped}
+
+
+@app.post("/api/rental/properties")
+@login_required
+def create_rental_property():
+    data = parse_json()
+    name = clean_text(data.get("name"))
+    if not name:
+        return jsonify({"ok": False, "error": "Informe o nome do imóvel."}), 400
+    with get_db() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO rental_properties (name, code, category, address, district, city, state, zip_code, notes, active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                clean_text(data.get("code")),
+                clean_text(data.get("category")) or "Residencial",
+                clean_text(data.get("address")),
+                clean_text(data.get("district")),
+                clean_text(data.get("city")),
+                clean_text(data.get("state")),
+                clean_text(data.get("zip_code")),
+                clean_text(data.get("notes")),
+                1 if str(data.get("active", 1)).lower() not in {"0", "false", "off", "no", ""} else 0,
+            ),
+        )
+    return jsonify({"ok": True, "id": cursor.lastrowid, "message": "Imóvel cadastrado."})
+
+
+@app.put("/api/rental/properties/<int:item_id>")
+@login_required
+def update_rental_property(item_id: int):
+    data = parse_json()
+    name = clean_text(data.get("name"))
+    if not name:
+        return jsonify({"ok": False, "error": "Informe o nome do imóvel."}), 400
+    with get_db() as conn:
+        conn.execute(
+            """
+            UPDATE rental_properties
+            SET name = ?, code = ?, category = ?, address = ?, district = ?, city = ?, state = ?, zip_code = ?, notes = ?, active = ?
+            WHERE id = ?
+            """,
+            (
+                name,
+                clean_text(data.get("code")),
+                clean_text(data.get("category")) or "Residencial",
+                clean_text(data.get("address")),
+                clean_text(data.get("district")),
+                clean_text(data.get("city")),
+                clean_text(data.get("state")),
+                clean_text(data.get("zip_code")),
+                clean_text(data.get("notes")),
+                1 if str(data.get("active", 1)).lower() not in {"0", "false", "off", "no", ""} else 0,
+                item_id,
+            ),
+        )
+    return jsonify({"ok": True, "message": "Imóvel atualizado."})
+
+
+@app.delete("/api/rental/properties/<int:item_id>")
+@login_required
+def delete_rental_property(item_id: int):
+    with get_db() as conn:
+        conn.execute("DELETE FROM rental_properties WHERE id = ?", (item_id,))
+    return jsonify({"ok": True, "message": "Imóvel excluído."})
+
+
+@app.post("/api/rental/tenants")
+@login_required
+def create_rental_tenant():
+    data = parse_json()
+    name = clean_text(data.get("name"))
+    if not name:
+        return jsonify({"ok": False, "error": "Informe o nome do inquilino."}), 400
+    with get_db() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO rental_tenants (name, document, email, phone, notes, active)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                clean_text(data.get("document")),
+                clean_text(data.get("email")),
+                clean_text(data.get("phone")),
+                clean_text(data.get("notes")),
+                1 if str(data.get("active", 1)).lower() not in {"0", "false", "off", "no", ""} else 0,
+            ),
+        )
+    return jsonify({"ok": True, "id": cursor.lastrowid, "message": "Inquilino cadastrado."})
+
+
+@app.put("/api/rental/tenants/<int:item_id>")
+@login_required
+def update_rental_tenant(item_id: int):
+    data = parse_json()
+    name = clean_text(data.get("name"))
+    if not name:
+        return jsonify({"ok": False, "error": "Informe o nome do inquilino."}), 400
+    with get_db() as conn:
+        conn.execute(
+            """
+            UPDATE rental_tenants
+            SET name = ?, document = ?, email = ?, phone = ?, notes = ?, active = ?
+            WHERE id = ?
+            """,
+            (
+                name,
+                clean_text(data.get("document")),
+                clean_text(data.get("email")),
+                clean_text(data.get("phone")),
+                clean_text(data.get("notes")),
+                1 if str(data.get("active", 1)).lower() not in {"0", "false", "off", "no", ""} else 0,
+                item_id,
+            ),
+        )
+    return jsonify({"ok": True, "message": "Inquilino atualizado."})
+
+
+@app.delete("/api/rental/tenants/<int:item_id>")
+@login_required
+def delete_rental_tenant(item_id: int):
+    with get_db() as conn:
+        conn.execute("DELETE FROM rental_tenants WHERE id = ?", (item_id,))
+    return jsonify({"ok": True, "message": "Inquilino excluído."})
+
+
+@app.post("/api/rental/contracts")
+@login_required
+def create_rental_contract():
+    data = parse_json()
+    property_id = int(data.get("property_id") or 0)
+    tenant_id = int(data.get("tenant_id") or 0)
+    start_date = clean_text(data.get("start_date"))
+    if not property_id or not tenant_id or not start_date:
+        return jsonify({"ok": False, "error": "Selecione imóvel, inquilino e data inicial do contrato."}), 400
+    with get_db() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO rental_contracts (
+                property_id, tenant_id, contract_code, start_date, end_date, due_day,
+                rent_amount, condo_amount, iptu_amount, other_amount, adjustment_index,
+                payment_method, status, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                property_id,
+                tenant_id,
+                clean_text(data.get("contract_code")),
+                start_date,
+                clean_text(data.get("end_date")),
+                max(int(data.get("due_day") or 5), 1),
+                float(to_float(data.get("rent_amount"), 0) or 0),
+                float(to_float(data.get("condo_amount"), 0) or 0),
+                float(to_float(data.get("iptu_amount"), 0) or 0),
+                float(to_float(data.get("other_amount"), 0) or 0),
+                clean_text(data.get("adjustment_index")),
+                clean_text(data.get("payment_method")),
+                clean_text(data.get("status")) or "ativo",
+                clean_text(data.get("notes")),
+            ),
+        )
+    return jsonify({"ok": True, "id": cursor.lastrowid, "message": "Contrato cadastrado."})
+
+
+@app.put("/api/rental/contracts/<int:item_id>")
+@login_required
+def update_rental_contract(item_id: int):
+    data = parse_json()
+    property_id = int(data.get("property_id") or 0)
+    tenant_id = int(data.get("tenant_id") or 0)
+    start_date = clean_text(data.get("start_date"))
+    if not property_id or not tenant_id or not start_date:
+        return jsonify({"ok": False, "error": "Selecione imóvel, inquilino e data inicial do contrato."}), 400
+    with get_db() as conn:
+        conn.execute(
+            """
+            UPDATE rental_contracts
+            SET property_id = ?, tenant_id = ?, contract_code = ?, start_date = ?, end_date = ?, due_day = ?,
+                rent_amount = ?, condo_amount = ?, iptu_amount = ?, other_amount = ?, adjustment_index = ?,
+                payment_method = ?, status = ?, notes = ?
+            WHERE id = ?
+            """,
+            (
+                property_id,
+                tenant_id,
+                clean_text(data.get("contract_code")),
+                start_date,
+                clean_text(data.get("end_date")),
+                max(int(data.get("due_day") or 5), 1),
+                float(to_float(data.get("rent_amount"), 0) or 0),
+                float(to_float(data.get("condo_amount"), 0) or 0),
+                float(to_float(data.get("iptu_amount"), 0) or 0),
+                float(to_float(data.get("other_amount"), 0) or 0),
+                clean_text(data.get("adjustment_index")),
+                clean_text(data.get("payment_method")),
+                clean_text(data.get("status")) or "ativo",
+                clean_text(data.get("notes")),
+                item_id,
+            ),
+        )
+    return jsonify({"ok": True, "message": "Contrato atualizado."})
+
+
+@app.delete("/api/rental/contracts/<int:item_id>")
+@login_required
+def delete_rental_contract(item_id: int):
+    with get_db() as conn:
+        conn.execute("DELETE FROM rental_contracts WHERE id = ?", (item_id,))
+    return jsonify({"ok": True, "message": "Contrato excluído."})
+
+
+@app.post("/api/rental/charges")
+@login_required
+def create_rental_charge():
+    data = parse_json()
+    contract_id = int(data.get("contract_id") or 0)
+    competence = parse_month(clean_text(data.get("competence")))
+    due_date = clean_text(data.get("due_date"))
+    if not contract_id or not due_date:
+        return jsonify({"ok": False, "error": "Selecione o contrato, a competência e o vencimento."}), 400
+    total_amount = recalc_rental_charge_total(data)
+    try:
+        with get_db() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO rental_charges (
+                    contract_id, competence, due_date, base_rent, condo_amount, iptu_amount, other_amount,
+                    discount_amount, interest_amount, penalty_amount, total_amount, status, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    contract_id,
+                    competence,
+                    due_date,
+                    float(to_float(data.get("base_rent"), 0) or 0),
+                    float(to_float(data.get("condo_amount"), 0) or 0),
+                    float(to_float(data.get("iptu_amount"), 0) or 0),
+                    float(to_float(data.get("other_amount"), 0) or 0),
+                    float(to_float(data.get("discount_amount"), 0) or 0),
+                    float(to_float(data.get("interest_amount"), 0) or 0),
+                    float(to_float(data.get("penalty_amount"), 0) or 0),
+                    total_amount,
+                    clean_text(data.get("status")) or "aberto",
+                    clean_text(data.get("notes")),
+                ),
+            )
+            refresh_rental_charge_status(conn, int(cursor.lastrowid))
+    except Exception as exc:
+        if 'UNIQUE constraint failed' in str(exc):
+            return jsonify({"ok": False, "error": "Já existe cobrança para esse contrato nessa competência."}), 400
+        raise
+    return jsonify({"ok": True, "id": cursor.lastrowid, "message": "Cobrança cadastrada."})
+
+
+@app.put("/api/rental/charges/<int:item_id>")
+@login_required
+def update_rental_charge(item_id: int):
+    data = parse_json()
+    contract_id = int(data.get("contract_id") or 0)
+    competence = parse_month(clean_text(data.get("competence")))
+    due_date = clean_text(data.get("due_date"))
+    if not contract_id or not due_date:
+        return jsonify({"ok": False, "error": "Selecione o contrato, a competência e o vencimento."}), 400
+    total_amount = recalc_rental_charge_total(data)
+    try:
+        with get_db() as conn:
+            conn.execute(
+                """
+                UPDATE rental_charges
+                SET contract_id = ?, competence = ?, due_date = ?, base_rent = ?, condo_amount = ?, iptu_amount = ?, other_amount = ?,
+                    discount_amount = ?, interest_amount = ?, penalty_amount = ?, total_amount = ?, status = ?, notes = ?
+                WHERE id = ?
+                """,
+                (
+                    contract_id,
+                    competence,
+                    due_date,
+                    float(to_float(data.get("base_rent"), 0) or 0),
+                    float(to_float(data.get("condo_amount"), 0) or 0),
+                    float(to_float(data.get("iptu_amount"), 0) or 0),
+                    float(to_float(data.get("other_amount"), 0) or 0),
+                    float(to_float(data.get("discount_amount"), 0) or 0),
+                    float(to_float(data.get("interest_amount"), 0) or 0),
+                    float(to_float(data.get("penalty_amount"), 0) or 0),
+                    total_amount,
+                    clean_text(data.get("status")) or "aberto",
+                    clean_text(data.get("notes")),
+                    item_id,
+                ),
+            )
+            refresh_rental_charge_status(conn, item_id)
+    except Exception as exc:
+        if 'UNIQUE constraint failed' in str(exc):
+            return jsonify({"ok": False, "error": "Já existe cobrança para esse contrato nessa competência."}), 400
+        raise
+    return jsonify({"ok": True, "message": "Cobrança atualizada."})
+
+
+@app.delete("/api/rental/charges/<int:item_id>")
+@login_required
+def delete_rental_charge(item_id: int):
+    with get_db() as conn:
+        conn.execute("DELETE FROM rental_charges WHERE id = ?", (item_id,))
+    return jsonify({"ok": True, "message": "Cobrança excluída."})
+
+
+@app.post("/api/rental/charges/generate")
+@login_required
+def generate_rental_charges_endpoint():
+    data = parse_json()
+    competence = parse_month(clean_text(data.get("competence")) or request.args.get("competence"))
+    with get_db() as conn:
+        result = generate_rental_charges_for_month(conn, competence)
+    return jsonify({
+        "ok": True,
+        "message": f"Cobranças processadas para {competence}: {result['created']} criada(s), {result['skipped']} já existente(s).",
+        "result": result,
+    })
+
+
+@app.post("/api/rental/receipts")
+@login_required
+def create_rental_receipt():
+    data = parse_json()
+    charge_id = int(data.get("charge_id") or 0)
+    amount = float(to_float(data.get("amount"), 0) or 0)
+    receipt_date = clean_text(data.get("receipt_date")) or date.today().isoformat()
+    if not charge_id or amount <= 0:
+        return jsonify({"ok": False, "error": "Selecione a cobrança e informe um valor recebido."}), 400
+    with get_db() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO rental_receipts (charge_id, receipt_date, amount, payment_method, reference, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                charge_id,
+                receipt_date,
+                amount,
+                clean_text(data.get("payment_method")),
+                clean_text(data.get("reference")),
+                clean_text(data.get("notes")),
+            ),
+        )
+        refresh_rental_charge_status(conn, charge_id)
+    return jsonify({"ok": True, "id": cursor.lastrowid, "message": "Recebimento cadastrado."})
+
+
+@app.put("/api/rental/receipts/<int:item_id>")
+@login_required
+def update_rental_receipt(item_id: int):
+    data = parse_json()
+    charge_id = int(data.get("charge_id") or 0)
+    amount = float(to_float(data.get("amount"), 0) or 0)
+    receipt_date = clean_text(data.get("receipt_date")) or date.today().isoformat()
+    if not charge_id or amount <= 0:
+        return jsonify({"ok": False, "error": "Selecione a cobrança e informe um valor recebido."}), 400
+    with get_db() as conn:
+        previous = conn.execute("SELECT charge_id FROM rental_receipts WHERE id = ?", (item_id,)).fetchone()
+        conn.execute(
+            """
+            UPDATE rental_receipts
+            SET charge_id = ?, receipt_date = ?, amount = ?, payment_method = ?, reference = ?, notes = ?
+            WHERE id = ?
+            """,
+            (
+                charge_id,
+                receipt_date,
+                amount,
+                clean_text(data.get("payment_method")),
+                clean_text(data.get("reference")),
+                clean_text(data.get("notes")),
+                item_id,
+            ),
+        )
+        if previous:
+            refresh_rental_charge_status(conn, int(previous["charge_id"] or 0))
+        refresh_rental_charge_status(conn, charge_id)
+    return jsonify({"ok": True, "message": "Recebimento atualizado."})
+
+
+@app.delete("/api/rental/receipts/<int:item_id>")
+@login_required
+def delete_rental_receipt(item_id: int):
+    with get_db() as conn:
+        row = conn.execute("SELECT charge_id FROM rental_receipts WHERE id = ?", (item_id,)).fetchone()
+        conn.execute("DELETE FROM rental_receipts WHERE id = ?", (item_id,))
+        if row:
+            refresh_rental_charge_status(conn, int(row["charge_id"] or 0))
+    return jsonify({"ok": True, "message": "Recebimento excluído."})
+
+
 @app.get("/api/reports/monthly")
 @login_required
 def api_monthly_report():
@@ -1394,8 +2324,60 @@ def api_monthly_report():
         "application_id": request.args.get("application_id"),
         "app_type": request.args.get("app_type"),
     }
+    report_mode = parse_report_mode(request.args.get("mode"))
     with get_db() as conn:
-        return jsonify({"ok": True, "report": monthly_report(conn, month, filters)})
+        try:
+            report = monthly_report(conn, month, filters, report_mode=report_mode)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 404
+        return jsonify({"ok": True, "report": report, "report_closures": list_report_closures(conn)})
+
+
+@app.post("/api/reports/monthly/close")
+@admin_required
+def api_close_monthly_report():
+    data = parse_json()
+    month = parse_month(data.get("month"))
+    overwrite = str(data.get("overwrite", "0")).lower() in {"1", "true", "yes", "on"}
+    with get_db() as conn:
+        existing = get_report_closure_row(conn, month)
+        if existing and not overwrite:
+            return jsonify({"ok": False, "error": "Essa competência já está fechada. Use a atualização do fechamento para substituir a versão congelada."}), 400
+        base_rows = build_monthly_report_rows(conn, month)
+        payload = {
+            "version": 1,
+            "month": month,
+            "month_label": month_label(month),
+            "monthly_rows": base_rows,
+        }
+        user_id = current_user_id()
+        if existing:
+            conn.execute(
+                "UPDATE report_closures SET report_payload_json = ?, closed_by_user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE ref_month = ?",
+                (json.dumps(payload, ensure_ascii=False), user_id, month),
+            )
+            message = "Fechamento oficial atualizado com sucesso."
+        else:
+            conn.execute(
+                "INSERT INTO report_closures (ref_month, report_payload_json, closed_by_user_id) VALUES (?, ?, ?)",
+                (month, json.dumps(payload, ensure_ascii=False), user_id),
+            )
+            message = "Fechamento oficial gerado com sucesso."
+        report = monthly_report(conn, month, report_mode="frozen")
+        return jsonify({"ok": True, "message": message, "report": report, "report_closures": list_report_closures(conn)})
+
+
+@app.delete("/api/reports/monthly/close")
+@admin_required
+def api_reopen_monthly_report():
+    month = parse_month(request.args.get("month"))
+    with get_db() as conn:
+        row = get_report_closure_row(conn, month)
+        if not row:
+            return jsonify({"ok": False, "error": "Não existe fechamento oficial para a competência informada."}), 404
+        conn.execute("DELETE FROM report_closures WHERE ref_month = ?", (month,))
+        report = monthly_report(conn, month, report_mode="dynamic")
+        return jsonify({"ok": True, "message": "Competência reaberta. O relatório voltou para o modo dinâmico.", "report": report, "report_closures": list_report_closures(conn)})
 
 
 @app.get("/api/reports/monthly/export")
@@ -1407,14 +2389,17 @@ def api_monthly_report_export():
         "application_id": request.args.get("application_id"),
         "app_type": request.args.get("app_type"),
     }
+    report_mode = parse_report_mode(request.args.get("mode"))
     with get_db() as conn:
-        report = monthly_report(conn, month, filters)
+        report = monthly_report(conn, month, filters, report_mode=report_mode)
     rows = report.get("monthly_rows") or []
     summary_rows = [
         {"Indicador": "Mês", "Valor": report.get("month_label")},
+        {"Indicador": "Modo do relatório", "Valor": "Fechado/congelado" if report.get("mode") == "frozen" else "Dinâmico"},
         {"Indicador": "Saldo inicial", "Valor": report["totals"].get("saldo_inicial", 0)},
-        {"Indicador": "Aportes líquidos", "Valor": report["totals"].get("aportes", 0)},
+        {"Indicador": "Aportes", "Valor": report["totals"].get("aportes", 0)},
         {"Indicador": "Resgates", "Valor": report["totals"].get("resgates", 0)},
+        {"Indicador": "Dividendos", "Valor": report["totals"].get("dividendos", 0)},
         {"Indicador": "Rendimentos", "Valor": report["totals"].get("rendimentos", 0)},
         {"Indicador": "Rentabilidade (%)", "Valor": report["totals"].get("rendimento_percentual", 0)},
         {"Indicador": "Saldo final", "Valor": report["totals"].get("saldo_final", 0)},
@@ -1457,6 +2442,8 @@ def reset_launches():
         conn.execute("DELETE FROM earnings")
         conn.execute("DELETE FROM snapshots")
         conn.execute("DELETE FROM import_logs")
+        conn.execute("DELETE FROM rental_receipts")
+        conn.execute("DELETE FROM rental_charges")
     return jsonify({"ok": True, "message": "Todos os lançamentos foram zerados. Cadastros mantidos."})
 
 
@@ -1471,6 +2458,11 @@ def reset_all():
         conn.execute("DELETE FROM applications")
         conn.execute("DELETE FROM accounts")
         conn.execute("DELETE FROM import_logs")
+        conn.execute("DELETE FROM rental_receipts")
+        conn.execute("DELETE FROM rental_charges")
+        conn.execute("DELETE FROM rental_contracts")
+        conn.execute("DELETE FROM rental_tenants")
+        conn.execute("DELETE FROM rental_properties")
     return jsonify({"ok": True, "message": "Base inteira limpa com sucesso."})
 
 
