@@ -9,7 +9,15 @@ const state = {
   earnings: [],
   snapshots: [],
   imports: [],
-  report: { month: '', totals: {}, portfolio_by_type: [], portfolio_by_account: [], monthly_rows: [], filters: {} }
+  rental_dashboard: { kpis: {}, upcoming_charges: [], recent_receipts: [] },
+  rental_properties: [],
+  rental_tenants: [],
+  rental_contracts: [],
+  rental_charges: [],
+  rental_receipts: [],
+  reportClosures: [],
+  report: { month: '', totals: {}, portfolio_by_type: [], portfolio_by_account: [], monthly_rows: [], filters: {}, closure: {}, mode: 'dynamic', requested_mode: 'dynamic' },
+  rental_report: { month: '', totals: {}, rows: [] }
 };
 
 const typeOptions = [
@@ -68,23 +76,28 @@ function getProjectedBalanceForApplication(applicationId, competence = currentMo
     .filter((item) => String(item.application_id) === String(applicationId) && String(item.ref_month || '') <= competence)
     .sort((a, b) => String(b.ref_month || '').localeCompare(String(a.ref_month || '')) || Number(b.id || 0) - Number(a.id || 0))[0];
 
-  if (latestSnapshot) return Number(latestSnapshot.balance || 0);
-
-  let total = Number(app.initial_value || 0);
+  let total = latestSnapshot ? Number(latestSnapshot.balance || 0) : Number(app.initial_value || 0);
+  const snapshotMonth = String(latestSnapshot?.ref_month || '');
   state.movements.forEach((item) => {
     if (String(item.application_id) !== String(applicationId)) return;
-    if (monthOf(item) > competence) return;
+    const itemMonth = monthOf(item);
+    if (snapshotMonth && itemMonth <= snapshotMonth) return;
+    if (itemMonth > competence) return;
     total += item.kind === 'resgate' ? -Number(item.amount || 0) : Number(item.amount || 0);
   });
   state.dividends.forEach((item) => {
     if (String(item.application_id) !== String(applicationId)) return;
-    if (monthOf(item, 'payment_date') > competence) return;
+    const itemMonth = monthOf(item, 'payment_date');
+    if (snapshotMonth && itemMonth <= snapshotMonth) return;
+    if (itemMonth > competence) return;
     total += Number(item.net_amount || 0);
   });
   state.earnings.forEach((item) => {
     if (String(item.application_id) !== String(applicationId)) return;
     if (excludeEarningId && String(item.id) === String(excludeEarningId)) return;
-    if (monthOf(item, 'payment_date') > competence) return;
+    const itemMonth = monthOf(item, 'payment_date');
+    if (snapshotMonth && itemMonth <= snapshotMonth) return;
+    if (itemMonth > competence) return;
     total += Number(item.amount || 0);
   });
   return total;
@@ -226,9 +239,14 @@ function updateReportFilterOptions() {
   fillFilterSelect('reportTypeFilter', typeOptions.map((item) => ({ value: item, label: item })), (item) => item.label, selectedType);
 }
 
+function reportModeLabel(mode) {
+  return mode === 'frozen' ? 'Fechado/congelado' : 'Dinâmico';
+}
+
 function buildReportQueryString() {
   const params = new URLSearchParams();
   params.set('month', $('reportMonth').value || currentMonth);
+  params.set('mode', $('reportMode')?.value || 'dynamic');
   if ($('reportAccountFilter')?.value) params.set('account_id', $('reportAccountFilter').value);
   if ($('reportApplicationFilter')?.value) params.set('application_id', $('reportApplicationFilter').value);
   if ($('reportTypeFilter')?.value) params.set('app_type', $('reportTypeFilter').value);
@@ -515,9 +533,13 @@ function buildMonthlyReportRows() {
 
 function renderReport() {
   const totals = state.report.totals || {};
+  const closure = state.report.closure || {};
   const month = state.report.month || $('reportMonth').value || currentMonth;
   const monthLabel = state.report.month_label || month || '-';
   const monthlyRows = buildMonthlyReportRows();
+  const currentMode = state.report.mode || $('reportMode')?.value || 'dynamic';
+  const requestedMode = state.report.requested_mode || currentMode;
+  if ($('reportMode')) $('reportMode').value = requestedMode;
   updateReportFilterOptions();
   if (state.report?.filters) {
     $('reportAccountFilter').value = state.report.filters.account_id ? String(state.report.filters.account_id) : '';
@@ -531,18 +553,34 @@ function renderReport() {
   const totalAcumulado = monthlyRows.reduce((sum, item) => sum + Number(item.totalAcumulado || 0), 0);
   const totalRendimentoPercentual = totalSaldoInicial > 0 ? Number((totalRendimentoReais / totalSaldoInicial * 100).toFixed(4)) : 0;
 
+  const statusParts = [`Modo em uso: <strong>${reportModeLabel(currentMode)}</strong>.`];
+  if (closure?.is_closed) {
+    statusParts.push(`Há fechamento oficial em <strong>${escapeHtml(closure.month_label || formatMonthLabel(closure.month || month))}</strong>.`);
+    if (closure.closed_by_name || closure.closed_at) {
+      statusParts.push(`Gerado por <strong>${escapeHtml(closure.closed_by_name || 'Sistema')}</strong>${closure.closed_at ? ` em <strong>${formatDateTime(closure.closed_at)}</strong>` : ''}.`);
+    }
+  } else {
+    statusParts.push('Ainda não existe fechamento oficial para a competência selecionada.');
+  }
+  if ($('reportModeStatus')) {
+    $('reportModeStatus').className = closure?.is_closed ? 'summary-box' : 'summary-box muted';
+    $('reportModeStatus').innerHTML = statusParts.join(' ');
+  }
+  if ($('btnFreezeReport')) $('btnFreezeReport').textContent = closure?.is_closed ? 'Atualizar fechamento' : 'Fechar competência';
+  if ($('btnReopenReport')) $('btnReopenReport').classList.toggle('hidden', !closure?.is_closed);
+
   $('reportCards').innerHTML = [
-    metricCard('Mês', monthLabel, 'Competência selecionada'),
-    metricCard('Saldo inicial', formatCurrency(totalSaldoInicial), 'Base do cálculo da rentabilidade'),
-    metricCard('Patrimônio', formatCurrency(totals.patrimonio), 'No fechamento do mês filtrado'),
+    metricCard('Mês', monthLabel, `Competência selecionada · ${reportModeLabel(currentMode)}`),
+    metricCard('Saldo inicial', formatCurrency(totalSaldoInicial), 'Base oficial do cálculo da rentabilidade'),
+    metricCard('Patrimônio', formatCurrency(totals.patrimonio), 'Mesma base do saldo final consolidado'),
     metricCard('Aportes', formatCurrency(totals.aportes), 'Competência do mês'),
     metricCard('Resgates', formatCurrency(totals.resgates), 'Competência do mês'),
-    metricCard('Rendimentos', formatCurrency(totals.rendimentos), 'Competência do mês'),
+    metricCard('Rendimentos', formatCurrency(totals.rendimentos), 'Dividendos + rendimentos da competência'),
     metricCard('Rentabilidade', `${formatPercent(totalRendimentoPercentual)}%`, 'Calculada sobre o saldo inicial filtrado'),
-    metricCard('Saldo final', formatCurrency(totalSaldoFinal), 'Fechamento projetado do período')
+    metricCard('Saldo final', formatCurrency(totalSaldoFinal), 'Fechamento consolidado do período')
   ].join('');
 
-  $('reportExecutiveSummary').innerHTML = `Em <strong>${escapeHtml(monthLabel)}</strong>, a carteira começou com <strong>${formatCurrency(totalSaldoInicial)}</strong>, recebeu <strong>${formatCurrency(totalAporte)}</strong> em aporte líquido e gerou <strong>${formatCurrency(totalRendimentoReais)}</strong> em rendimentos do mês, equivalente a <strong>${formatPercent(totalRendimentoPercentual)}%</strong>. O saldo final projetado ficou em <strong>${formatCurrency(totalSaldoFinal)}</strong>, com <strong>${formatCurrency(totalAcumulado)}</strong> acumulados em dividendos + rendimentos.`;
+  $('reportExecutiveSummary').innerHTML = `Em <strong>${escapeHtml(monthLabel)}</strong>, no modo <strong>${escapeHtml(reportModeLabel(currentMode))}</strong>, a carteira começou com <strong>${formatCurrency(totalSaldoInicial)}</strong>, recebeu <strong>${formatCurrency(totalAporte)}</strong> em aporte líquido e gerou <strong>${formatCurrency(totalRendimentoReais)}</strong> em rendimentos do mês, equivalente a <strong>${formatPercent(totalRendimentoPercentual)}%</strong>. O saldo final consolidado ficou em <strong>${formatCurrency(totalSaldoFinal)}</strong>, com <strong>${formatCurrency(totalAcumulado)}</strong> acumulados em dividendos + rendimentos.`;
 
   $('reportTypeBars').innerHTML = barList(state.report.portfolio_by_type || [], 'Sem posições para o mês selecionado.');
   $('reportAccountsTable').innerHTML = (state.report.portfolio_by_account || []).length
@@ -792,6 +830,13 @@ async function loadBootstrap(month = $('reportMonth').value || currentMonth) {
   state.earnings = data.earnings;
   state.snapshots = data.snapshots;
   state.imports = data.imports;
+  state.rental_dashboard = data.rental_dashboard || { kpis: {}, upcoming_charges: [], recent_receipts: [] };
+  state.rental_properties = data.rental_properties || [];
+  state.rental_tenants = data.rental_tenants || [];
+  state.rental_contracts = data.rental_contracts || [];
+  state.rental_charges = data.rental_charges || [];
+  state.rental_receipts = data.rental_receipts || [];
+  state.reportClosures = data.report_closures || [];
   state.report = data.report;
   $('loginOverlay').classList.add('hidden');
   updateSelects();
@@ -804,6 +849,7 @@ async function loadBootstrap(month = $('reportMonth').value || currentMonth) {
   renderImportSection();
   renderAdministration();
   renderReport();
+  return data;
 }
 
 async function saveJsonForm(idField, urlBase, payload) {
@@ -1106,8 +1152,9 @@ function bindButtons() {
     try {
       const data = await api(`/api/reports/monthly?${buildReportQueryString()}`);
       state.report = data.report;
+      state.reportClosures = data.report_closures || state.reportClosures || [];
       renderReport();
-      showFlash('Relatório mensal atualizado.', 'success');
+      showFlash(`Relatório mensal atualizado em modo ${reportModeLabel(state.report.mode || $('reportMode')?.value || 'dynamic').toLowerCase()}.`, 'success');
     } catch (error) {
       showFlash(error.message, 'error');
     }
@@ -1116,6 +1163,47 @@ function bindButtons() {
   $('btnExportReport').addEventListener('click', () => {
     window.location.href = `/api/reports/monthly/export?${buildReportQueryString()}`;
   });
+
+  if ($('btnFreezeReport')) {
+    $('btnFreezeReport').addEventListener('click', async () => {
+      const month = $('reportMonth').value || currentMonth;
+      const isClosed = Boolean(state.report?.closure?.is_closed);
+      const confirmed = confirm(isClosed
+        ? `A competência ${formatMonthLabel(month)} já está fechada. Deseja atualizar o fechamento congelado com os dados atuais?`
+        : `Deseja gerar o fechamento oficial da competência ${formatMonthLabel(month)}?`);
+      if (!confirmed) return;
+      try {
+        const data = await api('/api/reports/monthly/close', {
+          method: 'POST',
+          body: JSON.stringify({ month, overwrite: isClosed })
+        });
+        state.report = data.report;
+        state.reportClosures = data.report_closures || [];
+        if ($('reportMode')) $('reportMode').value = 'frozen';
+        renderReport();
+        showFlash(data.message || 'Fechamento oficial concluído.', 'success');
+      } catch (error) {
+        showFlash(error.message, 'error');
+      }
+    });
+  }
+
+  if ($('btnReopenReport')) {
+    $('btnReopenReport').addEventListener('click', async () => {
+      const month = $('reportMonth').value || currentMonth;
+      if (!confirm(`Deseja reabrir a competência ${formatMonthLabel(month)} e remover o fechamento congelado?`)) return;
+      try {
+        const data = await api(`/api/reports/monthly/close?month=${encodeURIComponent(month)}`, { method: 'DELETE' });
+        state.report = data.report;
+        state.reportClosures = data.report_closures || [];
+        if ($('reportMode')) $('reportMode').value = 'dynamic';
+        renderReport();
+        showFlash(data.message || 'Competência reaberta.', 'success');
+      } catch (error) {
+        showFlash(error.message, 'error');
+      }
+    });
+  }
 
   $('btnImportSample').addEventListener('click', async () => {
     try {
@@ -1187,6 +1275,7 @@ function setDefaults() {
   $('earningDate').value = today;
   $('earningCompetence').value = currentMonth;
   $('reportMonth').value = currentMonth;
+  if ($('reportMode')) $('reportMode').value = 'dynamic';
   fillStaticTypes();
   clearUserForm();
   recalculateEarningFields();
