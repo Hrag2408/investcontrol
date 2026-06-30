@@ -733,7 +733,7 @@ def build_monthly_report_rows(conn: sqlite3.Connection, month: str, filters: dic
             (app_id,),
         ).fetchall()
         all_earnings = conn.execute(
-            "SELECT amount, competence, payment_date FROM earnings WHERE application_id = ?",
+            "SELECT id, amount, competence, payment_date, previous_balance, current_balance FROM earnings WHERE application_id = ?",
             (app_id,),
         ).fetchall()
 
@@ -741,11 +741,23 @@ def build_monthly_report_rows(conn: sqlite3.Connection, month: str, filters: dic
         resgates = sum(float(item["amount"] or 0) for item in all_movements if clean_text(item["kind"]) == "resgate" and clean_text(item["competence"] or item["date"])[:7] == month)
         aporte = round(aportes - resgates, 2)
         dividendos = sum(float(item["net_amount"] or 0) for item in all_dividends if clean_text(item["competence"] or item["payment_date"])[:7] == month)
-        rendimentos = sum(float(item["amount"] or 0) for item in all_earnings if clean_text(item["competence"] or item["payment_date"])[:7] == month)
+        month_earnings = [item for item in all_earnings if clean_text(item["competence"] or item["payment_date"])[:7] == month]
+        rendimentos = sum(float(item["amount"] or 0) for item in month_earnings)
         rendimento_reais = round(dividendos + rendimentos, 2)
 
         saldo_inicial = opening_balance_from_official_anchor(conn, app_id, previous_month)
-        saldo_final = round(saldo_inicial + aporte + rendimento_reais, 2)
+        latest_month_earning = None
+        if month_earnings:
+            latest_month_earning = sorted(
+                month_earnings,
+                key=lambda item: (clean_text(item["payment_date"]), int(item["id"] or 0)),
+            )[-1]
+        latest_current_balance = round(float(latest_month_earning["current_balance"] or 0), 2) if latest_month_earning else 0.0
+        if latest_current_balance > 0:
+            saldo_final = latest_current_balance
+            saldo_inicial = round(saldo_final - aporte - rendimento_reais, 2)
+        else:
+            saldo_final = round(saldo_inicial + aporte + rendimento_reais, 2)
         rendimento_percentual = round((rendimento_reais / saldo_inicial * 100), 4) if saldo_inicial > 0 else 0.0
         total_acumulado = round(accumulated_income_from_official_anchor(conn, app_id, previous_month) + rendimento_reais, 2)
 
